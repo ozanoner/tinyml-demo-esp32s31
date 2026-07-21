@@ -1,0 +1,16 @@
+{
+    "name": "tinyml-demo-esp32s31",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "esp-idf",
+    "workspaceFolder": "/project",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "espressif.esp-idf-extension",
+                "ms-python.python"
+            ]
+        }
+    },
+    "shutdownAction": "stopCompose"
+}
