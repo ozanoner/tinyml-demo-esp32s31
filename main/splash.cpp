@@ -2,7 +2,7 @@
  * @file splash.cpp
  * @brief Splash class implementation.
  *
- * The splash paints labels on a caller-provided LVGL screen and sets a
+ * Paints labels on the default display's active screen and sets a
  * dismiss timer. Dismissal deletes only the labels and the timer; the
  * screen object itself is NOT owned and is never freed.
  */
@@ -16,13 +16,12 @@ static constexpr const char *TAG = "splash";
 //  Construction
 // ---------------------------------------------------------------------------
 
-Splash::Splash(lv_obj_t    *scr,
-               const char  *title,
+Splash::Splash(const char  *title,
                const char  *hint,
                uint32_t     timeout_ms,
                on_dismiss_t cb,
                void        *cb_arg)
-    : scr_(scr), label_(nullptr), hint_(nullptr), timer_(nullptr),
+    : scr_(lv_disp_get_scr_act(nullptr)), label_(nullptr), hint_(nullptr), timer_(nullptr),
       cb_(cb), cb_arg_(cb_arg)
 {
     /* Dark background */

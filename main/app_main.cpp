@@ -153,7 +153,7 @@ extern "C" void app_main(void)
     if (!bsp_display_lock(0)) {
         ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
     } else {
-        Splash splash(lv_disp_get_scr_act(nullptr),
+        Splash splash(
                       "TinyML Demo\n\nVoice Triggered\nObject Detection",
                       "Tap anywhere to skip");
         bsp_display_unlock();
