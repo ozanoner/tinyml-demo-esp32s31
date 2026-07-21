@@ -1,0 +1,14 @@
+services:
+  esp-idf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tinyml-demo-esp32s31
+    container_name: tinyml-demo-esp32s31
+    working_dir: /project
+    volumes:
+      - ../:/project
+    environment:
+      - ESP_IDF_VERSION=release-v6.1
+    stdin_open: true
+    tty: true

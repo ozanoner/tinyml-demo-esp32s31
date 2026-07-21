@@ -3,7 +3,7 @@
 
 **Version:** 1.0  
 **Project:** TinyML Demo for ESP32-S31 Korvo-1 Devkit  
-**SDK:** ESP-IDF v6.0.2
+**SDK:** ESP-IDF v6.1-beta1 (preview support for ESP32-S31)
 
 ---
 
@@ -23,9 +23,9 @@ The application demonstrates a complete voice-triggered vision pipeline running 
 ### 1.2 Operating Environment
 - **Hardware:** ESP32-S31-Korvo-1 V1.1 devkit
 - **SoC module:** ESP32-S31-WROOM-3 (ESP32-S31 dual-core RISC-V, 16 MB flash, 16 MB PSRAM)
-- **SDK:** ESP-IDF v6.0.2
+- **SDK:** ESP-IDF v6.1-beta1 (preview support for ESP32-S31)
 - **Target:** `esp32s31`
-- **Toolchain:** Docker-based DevContainer (`espressif/idf:v6.0.2`)
+- **Toolchain:** Docker-based DevContainer (`espressif/idf:release-v6.1`)
 - **Build host:** Linux x86_64 (inside DevContainer)
 
 ### 1.3 Glossary
@@ -52,9 +52,9 @@ The application demonstrates a complete voice-triggered vision pipeline running 
 Create the ESP-IDF project skeleton using `idf.py create-project` inside the DevContainer, targeting `esp32s31`.
 
 **Acceptance Criteria:**
-- [ ] Project created with `idf.py create-project tinyml-demo-esp32s31` inside the DevContainer (IDF v6.0.2)
+- [ ] Project created with `idf.py create-project tinyml-demo-esp32s31` inside the DevContainer (IDF v6.1-beta1)
 - [ ] Chip target set to `esp32s31` via `idf.py set-target esp32s31`
-- [ ] `.devcontainer/devcontainer.json`, `docker-compose.yml`, and `Dockerfile` configured for `espressif/idf:v6.0.2`
+- [ ] `.devcontainer/devcontainer.json`, `docker-compose.yml`, and `Dockerfile` configured for `espressif/idf:release-v6.1`
 - [ ] Standard ESP-IDF `.gitignore` — covering `build/`, `sdkconfig`, `__pycache__/`, `.pytest_cache/`, `dependencies.lock`, `pytest_embedded_log/`, etc.
 - [ ] `main/app_main.cpp` prints a boot banner with chip info, SDK version, and free heap
 - [ ] Project compiles successfully: `idf.py build`
