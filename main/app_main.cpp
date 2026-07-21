@@ -22,6 +22,7 @@ extern "C" {
 }
 
 #include "lvgl.h"
+#include "splash.hpp"
 
 static constexpr const char* TAG = "app";
 
@@ -54,82 +55,7 @@ static void print_memory_summary(const char *label)
 }
 
 /* ---------------------------------------------------------------------------
- *  LVGL splash screen
- * ------------------------------------------------------------------------- */
-
-/** Shared context for splash callbacks — prevents dangling-pointer race. */
-struct splash_ctx {
-    lv_obj_t   *scr;    /**< splash screen object */
-    lv_timer_t *timer;  /**< auto-dismiss timer     */
-};
-
-/** Called once by the LVGL timer when the splash timeout fires. */
-static void splash_timeout_cb(lv_timer_t *timer)
-{
-    auto *ctx = (splash_ctx *)lv_timer_get_user_data(timer);
-    if (ctx->scr) {
-        lv_obj_del(ctx->scr);
-        ctx->scr = nullptr;          /* invalidate so tap callback is a no-op */
-    }
-    ESP_LOGI(TAG, "Splash auto-dismissed after timeout");
-}
-
-/** Called when the user taps anywhere on the splash. */
-static void splash_tap_cb(lv_event_t *e)
-{
-    auto *ctx = (splash_ctx *)lv_event_get_user_data(e);
-    if (ctx->timer) {
-        lv_timer_del(ctx->timer);
-        ctx->timer = nullptr;        /* invalidate so timer callback is a no-op */
-    }
-    if (ctx->scr) {
-        lv_obj_del(ctx->scr);
-        ctx->scr = nullptr;
-    }
-    ESP_LOGI(TAG, "Splash dismissed by touch");
-}
-
-/**
- * @brief Create and show the splash screen.
- *
- * Must be called while holding the LVGL mutex.
- */
-static void show_splash(void)
-{
-    /* Use the default (active) screen */
-    lv_obj_t *scr = lv_scr_act();
-
-    /* Dark background */
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
-
-    /* Centred title label */
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "TinyML Demo\n\nVoice Triggered\nObject Detection");
-    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -20);
-
-    /* Smaller hint at the bottom */
-    lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint, "Tap anywhere to skip");
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -20);
-
-    /* Shared context — both callbacks reference the same struct */
-    auto *ctx = new splash_ctx{scr, nullptr};
-
-    /* 5-second auto-dismiss timer */
-    ctx->timer = lv_timer_create(splash_timeout_cb, 5000, ctx);
-    lv_timer_set_repeat_count(ctx->timer, 1);   /* fire once */
-
-    /* Register tap-dismiss on the whole screen */
-    lv_obj_add_event_cb(scr, splash_tap_cb, LV_EVENT_CLICKED, ctx);
-}
-
-/* ---------------------------------------------------------------------------
  *  BSP initialisation helpers
- *  Each returns esp_err_t — serves as a hardware self-test.
  * ------------------------------------------------------------------------- */
 
 static esp_err_t init_bsp_i2c(void)
@@ -231,11 +157,16 @@ extern "C" void app_main(void)
     print_memory_summary("CAMERA");
 
     /* ---- Splash screen (hold LVGL mutex) ---- */
-    if (bsp_display_lock(0)) {
-        show_splash();
-        bsp_display_unlock();
-    } else {
-        ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
+    {
+        if (bsp_display_lock(0)) {
+            Splash splash(lv_scr_act(),
+                          "TinyML Demo\n\nVoice Triggered\nObject Detection",
+                          "Tap anywhere to skip");
+            bsp_display_unlock();
+            /* Splash auto-dismisses or tap-dismisses; ~Splash() cleans up. */
+        } else {
+            ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
+        }
     }
 
     ESP_LOGI(TAG, "BSP init complete. Splash displayed (5 s or tap).");
