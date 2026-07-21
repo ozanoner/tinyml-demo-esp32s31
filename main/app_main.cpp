@@ -4,9 +4,9 @@
  *
  * REQ-002: BSP Integration and Splash Screen
  *
- * Initialises all board peripherals via the official BSP, then displays
- * a splash screen with LVGL. The splash auto-dismisses after 5 s or on
- * touch (GT1151). On dismiss, WakeNet listening would begin (REQ-004+).
+ * Following the reference pattern from esp-bsp/examples/display/main/main.c:
+ * initialise all BSP peripherals, show an LVGL splash, then return.
+ * The LVGL port task handles all display updates independently.
  */
 
 extern "C" {
@@ -16,8 +16,6 @@ extern "C" {
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "bsp/esp32_s31_korvo_1.h"
 }
 
@@ -28,7 +26,6 @@ static constexpr const char* TAG = "app";
 
 /* ---------------------------------------------------------------------------
  *  Helper: print a single-line memory summary
- *  Called after each major subsystem init.
  * ------------------------------------------------------------------------- */
 static void print_memory_summary(const char *label)
 {
@@ -42,15 +39,14 @@ static void print_memory_summary(const char *label)
              (unsigned long)free_psram,
              (unsigned long)largest);
 
-    /* Warn if >80 % used */
-    constexpr size_t total_sram  = 512 * 1024;   /* ~512 KB internal */
-    constexpr size_t total_psram = 16 * 1024 * 1024; /* 16 MB PSRAM */
+    constexpr size_t total_sram  = 512 * 1024;
+    constexpr size_t total_psram = 16 * 1024 * 1024;
 
     if (free_sram < total_sram / 5) {
-        ESP_LOGW(TAG, "⚠  SRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%%!");
     }
     if (free_psram < total_psram / 5) {
-        ESP_LOGW(TAG, "⚠  PSRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%%!");
     }
 }
 
@@ -82,15 +78,13 @@ static esp_err_t init_bsp_display(void)
 {
     ESP_LOGI(TAG, "BSP display + LVGL init...");
 
-    /* Use config with PSRAM-backed LVGL buffers — internal SRAM (340 KB free)
-     * cannot hold two 160 KB DMA buffers. */
     const bsp_display_cfg_t disp_cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
         .double_buffer = CONFIG_BSP_LCD_DRAW_BUF_DOUBLE,
         .flags = {
-            .buff_dma = false,       /* DMA not needed in PSRAM */
-            .buff_spiram = true,     /* allocate LVGL draw buffers in PSRAM */
+            .buff_dma = false,
+            .buff_spiram = true,
             .sw_rotate = false,
         }
     };
@@ -101,8 +95,7 @@ static esp_err_t init_bsp_display(void)
         return ESP_FAIL;
     }
 
-    /* Backlight — best-effort. This board reports NOT_SUPPORTED for
-     * backlight control because the display backlight is always on. */
+    /* Backlight — best-effort (NOT_SUPPORTED is expected on this board). */
     esp_err_t ret = bsp_display_backlight_on();
     if (ret != ESP_OK && ret != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGE(TAG, "bsp_display_backlight_on failed: %s", esp_err_to_name(ret));
@@ -115,7 +108,7 @@ static esp_err_t init_bsp_display(void)
 static esp_err_t init_bsp_camera(void)
 {
     ESP_LOGI(TAG, "BSP camera init...");
-    esp_err_t ret = bsp_camera_start(NULL);  /* NULL = default config */
+    esp_err_t ret = bsp_camera_start(NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "bsp_camera_start failed: %s", esp_err_to_name(ret));
     }
@@ -123,17 +116,17 @@ static esp_err_t init_bsp_camera(void)
 }
 
 /* ---------------------------------------------------------------------------
- *  app_main
+ *  app_main  —  returns after init + splash; LVGL port task runs async
  * ------------------------------------------------------------------------- */
 
 extern "C" void app_main(void)
 {
-    /* ---- Chip info banner (unchanged from REQ-001) ---- */
+    /* ---- Chip info banner ---- */
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, "  TinyML Demo — ESP32-S31 Korvo-1");
+    ESP_LOGI(TAG, "  TinyML Demo \u2014 ESP32-S31 Korvo-1");
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, "Chip:         ESP32-S31");
     ESP_LOGI(TAG, "Cores:        %d", chip_info.cores);
@@ -156,26 +149,21 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(init_bsp_camera());
     print_memory_summary("CAMERA");
 
-    /* ---- Splash screen (hold LVGL mutex) ---- */
-    {
-        if (bsp_display_lock(0)) {
-            Splash splash(lv_scr_act(),
-                          "TinyML Demo\n\nVoice Triggered\nObject Detection",
-                          "Tap anywhere to skip");
-            bsp_display_unlock();
-            /* Splash auto-dismisses or tap-dismisses; ~Splash() cleans up. */
-        } else {
-            ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
+    /* ---- Splash screen ---- */
+    if (!bsp_display_lock(0)) {
+        ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
+    } else {
+        Splash splash(lv_disp_get_scr_act(nullptr),
+                      "TinyML Demo\n\nVoice Triggered\nObject Detection",
+                      "Tap anywhere to skip");
+        bsp_display_unlock();
+
+        /* Wait until the splash is dismissed (timer/tap) before continuing.
+         * The Splash object must outlive its own timer. */
+        while (splash.is_active()) {
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 
-    ESP_LOGI(TAG, "BSP init complete. Splash displayed (5 s or tap).");
-    ESP_LOGI(TAG, "WakeNet will start after splash dismisses (REQ-004).");
-
-    /* Keep app_main alive — LVGL task handles display updates.
-     * Once WakeNet is integrated (REQ-004), this loop is replaced by
-     * the state machine. */
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    ESP_LOGI(TAG, "BSP init complete. Splash dismissed.");
 }

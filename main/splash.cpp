@@ -1,6 +1,10 @@
 /**
  * @file splash.cpp
  * @brief Splash class implementation.
+ *
+ * The splash paints labels on a caller-provided LVGL screen and sets a
+ * dismiss timer. Dismissal deletes only the labels and the timer; the
+ * screen object itself is NOT owned and is never freed.
  */
 
 #include "splash.hpp"
@@ -18,26 +22,27 @@ Splash::Splash(lv_obj_t    *scr,
                uint32_t     timeout_ms,
                on_dismiss_t cb,
                void        *cb_arg)
-    : scr_(scr), cb_(cb), cb_arg_(cb_arg)
+    : scr_(scr), label_(nullptr), hint_(nullptr), timer_(nullptr),
+      cb_(cb), cb_arg_(cb_arg)
 {
     /* Dark background */
     lv_obj_set_style_bg_color(scr_, lv_color_hex(0x1a1a2e), 0);
 
     /* Centred title */
-    lv_obj_t *lbl = lv_label_create(scr_);
-    lv_label_set_text(lbl, title);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
-    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, -20);
+    label_ = lv_label_create(scr_);
+    lv_label_set_text(label_, title);
+    lv_obj_set_style_text_color(label_, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(label_, &lv_font_montserrat_28, 0);
+    lv_obj_align(label_, LV_ALIGN_CENTER, 0, -20);
 
     /* Footer hint */
-    lv_obj_t *ht = lv_label_create(scr_);
-    lv_label_set_text(ht, hint);
-    lv_obj_set_style_text_color(ht, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(ht, &lv_font_montserrat_14, 0);
-    lv_obj_align(ht, LV_ALIGN_BOTTOM_MID, 0, -20);
+    hint_ = lv_label_create(scr_);
+    lv_label_set_text(hint_, hint);
+    lv_obj_set_style_text_color(hint_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(hint_, &lv_font_montserrat_14, 0);
+    lv_obj_align(hint_, LV_ALIGN_BOTTOM_MID, 0, -20);
 
-    /* 5-second auto-dismiss timer (self-pointer as user_data) */
+    /* Auto-dismiss timer */
     timer_ = lv_timer_create(_on_timeout, timeout_ms, this);
     lv_timer_set_repeat_count(timer_, 1);
 
@@ -46,20 +51,12 @@ Splash::Splash(lv_obj_t    *scr,
 }
 
 // ---------------------------------------------------------------------------
-//  Destruction
+//  Destruction  —  cleans up children only, not scr_
 // ---------------------------------------------------------------------------
 
 Splash::~Splash()
 {
-    /* If the screen objects weren't already cleaned up by a callback, do it. */
-    if (timer_) {
-        lv_timer_del(timer_);
-        timer_ = nullptr;
-    }
-    if (scr_) {
-        lv_obj_del(scr_);
-        scr_ = nullptr;
-    }
+    _cleanup();
 }
 
 // ---------------------------------------------------------------------------
@@ -79,25 +76,33 @@ void Splash::_on_tap(lv_event_t *e)
 }
 
 // ---------------------------------------------------------------------------
-//  Private — internal dismiss
+//  Private — internal dismiss + cleanup
 // ---------------------------------------------------------------------------
 
 void Splash::_dismiss(Reason r)
 {
-    /* One of the two callbacks may have already run; guard against double. */
     ESP_LOGI(TAG, "Splash dismissed (%s)",
              r == Reason::TIMEOUT ? "timeout" : "touch");
+    _cleanup();
+    if (cb_) {
+        cb_(r, cb_arg_);
+    }
+}
 
+void Splash::_cleanup()
+{
     if (timer_) {
         lv_timer_del(timer_);
         timer_ = nullptr;
     }
-    if (scr_) {
-        lv_obj_del(scr_);
-        scr_ = nullptr;
+    /* Delete the labels we created (children of scr_ — not scr_ itself). */
+    if (label_) {
+        lv_obj_del(label_);
+        label_ = nullptr;
     }
-
-    if (cb_) {
-        cb_(r, cb_arg_);
+    if (hint_) {
+        lv_obj_del(hint_);
+        hint_ = nullptr;
     }
+    /* scr_ is NOT owned — do not delete it. */
 }
