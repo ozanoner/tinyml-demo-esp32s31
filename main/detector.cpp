@@ -1,17 +1,24 @@
 /**
  * @file detector.cpp
- * @brief COCO object detection — wraps COCODetect from espressif/coco_detect.
+ * @brief COCO object detection — wraps COCODetect, owns inference task.
  */
 
 #include "detector.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "coco_detect.hpp"
 #include "dl_image_define.hpp"
 
 static constexpr const char *TAG = "detect";
+
+/* Static task resources (PSRAM-backed stack) */
+StackType_t  Detector::task_stack_[8 * 1024 / sizeof(StackType_t)]
+    __attribute__((section(".ext_ram.bss")));
+StaticTask_t Detector::task_tcb_;
 
 /* ---------------------------------------------------------------------------
  *  RGB565 BE → RGB888 (one pixel)
@@ -31,14 +38,12 @@ static inline void rgb565be_to_rgb888(const uint8_t *src, uint8_t *dst)
 Detector::Detector()
     : detect_(nullptr), rgb_buf_(nullptr), rgb_buf_sz_(0)
 {
-    /* YOLO11n at 320x320 — smallest COCO model, ~2s inference on S31 */
     detect_ = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, false);
     if (detect_ == nullptr) {
         ESP_LOGE(TAG, "COCODetect allocation failed");
         return;
     }
 
-    /* Verify model was loaded (menuconfig selection check at compile time) */
     dl::Model *raw = detect_->get_raw_model(0);
     if (raw == nullptr) {
         ESP_LOGE(TAG, "COCODetect model not compiled in — check sdkconfig");
@@ -47,8 +52,6 @@ Detector::Detector()
         return;
     }
 
-    /* Scratch buffer for RGB565 BE → RGB888 conversion.
-     * Max camera input is 240×240 → 172,800 bytes max. */
     rgb_buf_sz_ = 240 * 240 * 3;
     rgb_buf_ = static_cast<uint8_t *>(
         heap_caps_malloc(rgb_buf_sz_, MALLOC_CAP_SPIRAM));
@@ -66,13 +69,12 @@ Detector::~Detector()
 {
     if (rgb_buf_) {
         heap_caps_free(rgb_buf_);
-        rgb_buf_ = nullptr;
     }
     delete detect_;
 }
 
 /* ---------------------------------------------------------------------------
- *  detect
+ *  detect (synchronous)
  * ------------------------------------------------------------------------- */
 
 bool Detector::detect(const uint8_t *data,
@@ -87,7 +89,6 @@ bool Detector::detect(const uint8_t *data,
 
     int64_t t0 = esp_timer_get_time();
 
-    /* ---- 1. Convert RGB565 BE → RGB888 into scratch buffer ------------ */
     const uint32_t npixels = width * height;
     if (npixels * 3 > rgb_buf_sz_) {
         ESP_LOGE(TAG, "Frame too large for scratch buffer");
@@ -100,7 +101,6 @@ bool Detector::detect(const uint8_t *data,
 
     int64_t t1 = esp_timer_get_time();
 
-    /* ---- 2. Build img_t and run inference ----------------------------- */
     dl::image::img_t img;
     img.data     = rgb_buf_;
     img.width    = static_cast<uint16_t>(width);
@@ -124,4 +124,96 @@ bool Detector::detect(const uint8_t *data,
     }
 
     return true;
+}
+
+/* ---------------------------------------------------------------------------
+ *  detect_async — launches inference in a dedicated FreeRTOS task
+ * ------------------------------------------------------------------------- */
+
+bool Detector::detect_async(const uint8_t *data,
+                            uint32_t      width,
+                            uint32_t      height,
+                            result_cb_t   cb)
+{
+    if (detect_ == nullptr) {
+        ESP_LOGE(TAG, "Detector not initialised");
+        return false;
+    }
+
+    /* Copy frame data so the task owns it */
+    size_t fsz = width * height * 2;
+    auto *fdup = static_cast<uint8_t *>(
+        heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
+    if (fdup == nullptr) {
+        ESP_LOGE(TAG, "OOM for frame copy (%zu)", fsz);
+        return false;
+    }
+    memcpy(fdup, data, fsz);
+
+    auto *arg = new (std::nothrow) infer_arg_t{
+        .data   = fdup,
+        .width  = width,
+        .height = height,
+        .self   = this,
+        .cb     = std::move(cb),
+    };
+    if (arg == nullptr) {
+        ESP_LOGE(TAG, "OOM for infer_arg_t");
+        heap_caps_free(fdup);
+        return false;
+    }
+
+    TaskHandle_t th = xTaskCreateStatic(
+        task_entry, "detect", 8 * 1024, arg, 5, task_stack_, &task_tcb_);
+    if (th == nullptr) {
+        ESP_LOGE(TAG, "Failed to create detect task");
+        heap_caps_free(fdup);
+        delete arg;
+        return false;
+    }
+
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
+ *  task_entry — static, runs in dedicated PSRAM stack
+ * ------------------------------------------------------------------------- */
+
+void Detector::task_entry(void *arg)
+{
+    auto *ia = static_cast<infer_arg_t *>(arg);
+    Detector *self = ia->self;
+    int64_t t_start = esp_timer_get_time();
+
+    ESP_LOGI(TAG, "task started  t=%lld ms", (t_start / 1000));
+
+    std::list<dl::detect::result_t> results;
+    bool ok = self->detect(ia->data, ia->width, ia->height, results);
+
+    int64_t t_inf = esp_timer_get_time();
+    ESP_LOGI(TAG, "task done  ok=%d  detections=%u  t=%lld ms",
+             ok, (unsigned)results.size(), (t_inf / 1000));
+
+    /* Format top-2 results */
+    char buf[64];
+    if (ok && !results.empty()) {
+        auto it = results.begin();
+        int printed = snprintf(buf, sizeof(buf), "obj %d %.0f%%",
+                 it->category, (double)(it->score * 100.0f));
+        if (++it != results.end()) {
+            snprintf(buf + printed, sizeof(buf) - printed,
+                     " / obj %d %.0f%%",
+                     it->category, (double)(it->score * 100.0f));
+        }
+    } else {
+        snprintf(buf, sizeof(buf), "No objects detected");
+    }
+
+    if (ia->cb) {
+        ia->cb(buf);
+    }
+
+    heap_caps_free(ia->data);
+    delete ia;
+    vTaskDelete(nullptr);
 }

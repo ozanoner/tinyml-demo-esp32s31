@@ -17,4 +17,4 @@ dependencies:
   espressif/esp32_s31_korvo_1: '*'
   espressif/esp-sr: ^2.4.6
   espressif/esp-dl: '>=3.3.8'
-  espressif/coco_detect: '*'
+  espressif/coco_detect: '^0.4.0'

@@ -1,10 +1,6 @@
 /**
  * @file detector.hpp
- * @brief COCO object detection wrapper — RAII, zero CMake tricks.
- *
- * Wraps espressif/coco_detect component.  Takes a camera frame buffer
- * (RGB565 BE), converts to RGB888, runs inference via COCODetect::run().
- * Results are bounding boxes with COCO class labels and scores.
+ * @brief COCO object detection wrapper — RAII, owns its inference task.
  */
 
 #pragma once
@@ -12,11 +8,12 @@
 #include <cstdint>
 #include <cstddef>
 #include <list>
+#include <functional>
 
-/* ESP-DL detect result type */
 #include "dl_detect_define.hpp"
 
 class COCODetect;
+class StateDisplay;
 
 class Detector final {
 public:
@@ -30,22 +27,44 @@ public:
 
     bool is_ok() const { return detect_ != nullptr; }
 
+    /** Callback invoked with result string (e.g. "obj 1 85% / obj 3 42%"). */
+    using result_cb_t = std::function<void(const char *)>;
+
     /**
-     * @brief Run detection on a camera frame.
-     *
-     * @param[in]  data       RGB565 BE pixel data
-     * @param[in]  width      frame width  (px)
-     * @param[in]  height     frame height (px)
-     * @param[out] results    detection results
-     * @return                true on success, false on failure
+     * @brief Run detection on a camera frame (synchronous).
      */
     bool detect(const uint8_t *data,
                 uint32_t      width,
                 uint32_t      height,
                 std::list<dl::detect::result_t> &results);
 
+    /**
+     * @brief Launch async detection in a dedicated FreeRTOS task.
+     *
+     * Copies the frame data, spawns a task with PSRAM stack, runs inference,
+     * then calls the result callback on completion.
+     */
+    bool detect_async(const uint8_t *data,
+                      uint32_t      width,
+                      uint32_t      height,
+                      result_cb_t   cb);
+
 private:
     COCODetect *detect_;
-    uint8_t    *rgb_buf_;     /**< Scratch buffer for RGB888 conversion */
-    uint32_t    rgb_buf_sz_;  /**< Allocated size of rgb_buf_ */
+    uint8_t    *rgb_buf_;
+    uint32_t    rgb_buf_sz_;
+
+    /* PSRAM-backed task resources for async inference */
+    struct infer_arg_t {
+        uint8_t  *data;
+        uint32_t  width;
+        uint32_t  height;
+        Detector *self;
+        result_cb_t cb;
+    };
+
+    static StackType_t  task_stack_[8 * 1024 / sizeof(StackType_t)];
+    static StaticTask_t task_tcb_;
+
+    static void task_entry(void *arg);
 };

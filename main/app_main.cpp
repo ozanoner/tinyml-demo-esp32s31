@@ -53,67 +53,6 @@ static Camera *g_camera = nullptr;
 /* COCO object detector — created after camera, runs inference on frames. */
 static Detector *g_detector = nullptr;
 
-/* ---------------------------------------------------------------------------
- *  Inference task — runs in its own PSRAM stack, not in the timer daemon
- * ------------------------------------------------------------------------- */
-struct infer_arg_t {
-    uint8_t  *data;
-    uint32_t  width;
-    uint32_t  height;
-};
-
-static StackType_t infer_stack[8 * 1024 / sizeof(StackType_t)]
-    __attribute__((section(".ext_ram.bss")));  // in PSRAM
-static StaticTask_t infer_tcb;
-
-static void inference_task(void *arg)
-{
-    auto *ia = static_cast<infer_arg_t *>(arg);
-    int64_t t_start = esp_timer_get_time();
-
-    ESP_LOGI(TAG, "INF: task started  t=%lld ms", (t_start / 1000));
-
-    if (g_detector != nullptr && g_detector->is_ok()) {
-        ESP_LOGI(TAG, "INF: calling detect()  w=%" PRIu32 " h=%" PRIu32,
-                 ia->width, ia->height);
-
-        std::list<dl::detect::result_t> results;
-        bool ok = g_detector->detect(ia->data, ia->width, ia->height, results);
-
-        int64_t t_inf = esp_timer_get_time();
-        ESP_LOGI(TAG, "INF: detect() returned ok=%d  detections=%u  t=%lld ms",
-                 ok, (unsigned)results.size(), (t_inf / 1000));
-
-        if (ok && !results.empty()) {
-            char buf[64];
-            const auto &r = results.front();
-            snprintf(buf, sizeof(buf), "obj %d  %.0f%%",
-                     r.category, (double)(r.score * 100.0f));
-            ESP_LOGI(TAG, "INF: showing result \"%s\"", buf);
-            if (g_state != nullptr) {
-                g_state->show_temp(buf, 5000, STATE_WAKEWORD);
-            }
-        } else {
-            ESP_LOGI(TAG, "INF: no objects detected");
-            if (g_state != nullptr) {
-                g_state->show_temp(STATE_NO_OBJECTS, 3000, STATE_WAKEWORD);
-            }
-        }
-    } else {
-        ESP_LOGE(TAG, "INF: detector not available (null=%d ok=%d)",
-                 g_detector == nullptr,
-                 g_detector != nullptr ? g_detector->is_ok() : 0);
-        if (g_state != nullptr) {
-            g_state->set_state(STATE_WAKEWORD);
-        }
-    }
-
-    heap_caps_free(ia->data);
-    heap_caps_free(ia);
-    ESP_LOGI(TAG, "INF: task done  t=%lld ms", (esp_timer_get_time() / 1000));
-    vTaskDelete(nullptr);
-}
-
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
     g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
@@ -341,42 +280,19 @@ extern "C" void app_main(void)
                     g_state->set_state(STATE_ANALYSING);
                 }
 
-                /* Launch inference in its own task (timer stack too small).
-                 * Copy frame data so the task owns it. */
-                size_t fsz = frame.width * frame.height * 2;
-                auto *fdup = static_cast<uint8_t *>(
-                    heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
-                if (fdup == nullptr) {
-                    ESP_LOGE(TAG, "OOM for frame copy");
+                /* Launch async inference in its own PSRAM-backed task */
+                if (g_detector != nullptr) {
+                    g_detector->detect_async(
+                        frame.data, frame.width, frame.height,
+                        [](const char *result) {
+                            if (g_state != nullptr) {
+                                g_state->show_temp(result, 5000,
+                                                   STATE_WAKEWORD);
+                            }
+                        });
+                } else {
                     if (g_state != nullptr) {
-                        g_state->set_state(STATE_WAKEWORD);
-                    }
-                    return;
-                }
-                memcpy(fdup, frame.data, fsz);
-
-                auto *ia = static_cast<infer_arg_t *>(
-                    heap_caps_malloc(sizeof(infer_arg_t), MALLOC_CAP_SPIRAM));
-                if (ia == nullptr) {
-                    ESP_LOGE(TAG, "OOM for infer arg");
-                    heap_caps_free(fdup);
-                    if (g_state != nullptr) {
-                        g_state->set_state(STATE_WAKEWORD);
-                    }
-                    return;
-                }
-                ia->data   = fdup;
-                ia->width  = frame.width;
-                ia->height = frame.height;
-
-                TaskHandle_t th = xTaskCreateStatic(inference_task, "detect",
-                    8 * 1024, ia, 5, infer_stack, &infer_tcb);
-                if (th == nullptr) {
-                    ESP_LOGE(TAG, "Failed to create detect task");
-                    heap_caps_free(ia->data);
-                    heap_caps_free(ia);
-                    if (g_state != nullptr) {
-                        g_state->set_state(STATE_WAKEWORD);
+                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                     }
                 }
             });
