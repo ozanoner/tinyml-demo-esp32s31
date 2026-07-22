@@ -208,8 +208,11 @@ extern "C" void app_main(void)
 
     auto on_command = []() {
         ESP_LOGI(TAG, ">>> Command 'cheese' detected <<<");
-        /* Remain in STATE_COMMAND — the 15 s window is still active;
-         * user can say "cheese" multiple times. */
+        if (g_state != nullptr) {
+            g_state->set_state(STATE_COMMAND_DETECTED);
+        } else {
+            ESP_LOGE(TAG, "on_command: g_state is null");
+        }
     };
 
     auto on_timeout = []() {
