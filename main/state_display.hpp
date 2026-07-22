@@ -2,7 +2,7 @@
  * @file state_display.hpp
  * @brief Persistent application state label — RAII, instant text updates.
  *
- * Owns an LVGL label on the default display's active screen. The label is
+ * Owns an LVGL label on the default display's active screen.  The label is
  * created in the constructor and deleted in the destructor.  Caller must
  * ensure the LVGL mutex is held for all LVGL calls (bsp_display_lock /
  * bsp_display_unlock).
@@ -13,6 +13,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 #include "lvgl.h"
 
 /* ---- Canonical state strings for the voice-triggered camera pipeline ---- */
@@ -43,8 +47,22 @@ public:
     /** Update the state text instantly — no animation, no blank frame. */
     void set_state(const char *text);
 
+    /**
+     * @brief Show a detected command on screen.
+     *
+     * For "cheese": shows a 3-second countdown (cheese 3... → 2... → 1...).
+     * For other commands: shows "\"XX\" detected" for 3 seconds then reverts
+     * to STATE_COMMAND.
+     */
+    void show_cmd(const char *cmd);
+
 private:
-    lv_obj_t *label_;   /**< state label  (owned) */
+    lv_obj_t     *label_;     /**< state label  (owned) */
+    TimerHandle_t timer_;     /**< 3s display revert / 1s countdown tick */
+    int           countdown_; /**< remaining seconds for cheese countdown */
+
+    /** Timer callback — advances countdown or reverts display. */
+    static void on_timer(TimerHandle_t t);
 
     static const lv_color_t FG;
     static const lv_color_t BG;

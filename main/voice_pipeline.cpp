@@ -320,7 +320,7 @@ void VoicePipeline::detect_task_fn(void *arg)
 
     /* Re-register all internal commands + add "cheese" */
     esp_mn_commands_alloc(multinet, model_data);
-    const char *cmds[] = {
+    static const char *cmds[] = {
         "tell me a joke",
         "sing a song",
         "play the news channel",
@@ -355,7 +355,8 @@ void VoicePipeline::detect_task_fn(void *arg)
         "26 degrees",
         "cheese",
     };
-    for (int i = 0; i < (int)(sizeof(cmds) / sizeof(cmds[0])); i++) {
+    static const int cmd_count = sizeof(cmds) / sizeof(cmds[0]);
+    for (int i = 0; i < cmd_count; i++) {
         esp_mn_commands_add(i, cmds[i]);
     }
     esp_mn_commands_update();
@@ -440,13 +441,18 @@ void VoicePipeline::detect_task_fn(void *arg)
                 if (mn_result != nullptr && mn_result->num > 0) {
                     float prob = mn_result->prob[0];
                     if (prob >= self->command_threshold_) {
+                        int cmd_id = mn_result->command_id[0];
+                        /* Use registered English text; fall back to raw string */
+                        const char *display =
+                            (cmd_id >= 0 && cmd_id < cmd_count)
+                                ? cmds[cmd_id]
+                                : mn_result->string;
                         ESP_LOGI(TAG, ">>> Command detected: '%s' "
-                                 "(phrase_id=%d prob=%.3f) <<<",
-                                 mn_result->string,
-                                 mn_result->phrase_id[0], (double)prob);
+                                 "(id=%d prob=%.3f) <<<",
+                                 display, cmd_id, (double)prob);
 
                         if (self->on_command_) {
-                            self->on_command_(mn_result->string);
+                            self->on_command_(display);
                         }
                     }
                 }

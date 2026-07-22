@@ -41,17 +41,6 @@ static StateDisplay *g_state = nullptr;
  * Created after splash dismissal, survives app_main return. */
 static VoicePipeline *g_voice = nullptr;
 
-/* 3-second timer for command display auto-revert */
-static TimerHandle_t g_cmd_display_timer = nullptr;
-static constexpr uint32_t CMD_DISPLAY_MS = 3000;
-
-static void on_cmd_display_timer(TimerHandle_t)
-{
-    if (g_state != nullptr) {
-        g_state->set_state(STATE_COMMAND);
-    }
-}
-
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
     g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
@@ -222,14 +211,7 @@ extern "C" void app_main(void)
     auto on_command = [](const char *cmd) {
         ESP_LOGI(TAG, ">>> Command detected: '%s' <<<", cmd);
         if (g_state != nullptr) {
-            static char buf[64];
-            snprintf(buf, sizeof(buf), "\"%s\" detected", cmd);
-            g_state->set_state(buf);
-        }
-        /* Revert to command listening after 3 seconds */
-        if (g_cmd_display_timer != nullptr) {
-            xTimerStop(g_cmd_display_timer, 0);
-            xTimerReset(g_cmd_display_timer, 0);
+            g_state->show_cmd(cmd);
         }
     };
 
@@ -242,8 +224,6 @@ extern "C" void app_main(void)
     };
 
     /* Create 3-second display revert timer */
-    g_cmd_display_timer = xTimerCreate("cmd_disp", pdMS_TO_TICKS(CMD_DISPLAY_MS),
-                                       pdFALSE, nullptr, on_cmd_display_timer);
 
     g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
                                                std::move(on_command),
