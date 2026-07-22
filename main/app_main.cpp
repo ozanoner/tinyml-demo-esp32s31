@@ -6,6 +6,8 @@
  * REQ-003: Application State Display
  * REQ-004: WakeNet Wake-Word Detection
  * REQ-005: MultiNet Command Detection
+ * REQ-006: Camera Capture
+ * REQ-007: Object Detection (COCO YOLO11n via ESP-DL)
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
  * initialise all BSP peripherals, show an LVGL splash, then transition to
@@ -20,6 +22,7 @@ extern "C" {
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "bsp/esp32_s31_korvo_1.h"
 }
 
@@ -30,6 +33,7 @@ extern "C" {
 #include "splash.hpp"
 #include "state_display.hpp"
 #include "camera.hpp"
+#include "detector.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -45,6 +49,9 @@ static VoicePipeline *g_voice = nullptr;
 /* Camera capture — owns the fixed PSRAM frame buffer.
  * Created after splash dismissal, before voice pipeline. */
 static Camera *g_camera = nullptr;
+
+/* COCO object detector — created after camera, runs inference on frames. */
+static Detector *g_detector = nullptr;
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
@@ -73,10 +80,10 @@ static void print_memory_summary(const char *label)
     constexpr size_t total_psram = 16 * 1024 * 1024;
 
     if (free_sram < total_sram / 5) {
-        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%!");
     }
     if (free_psram < total_psram / 5) {
-        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%!");
     }
 }
 
@@ -209,6 +216,13 @@ extern "C" void app_main(void)
     }
     print_memory_summary("CAMERA");
 
+    /* ---- Object detector (COCO YOLO11n via ESP-DL) -------------------- */
+    g_detector = new (std::nothrow) Detector();
+    if (g_detector != nullptr && !g_detector->is_ok()) {
+        ESP_LOGE(TAG, "Detector init failed — inference disabled");
+    }
+    print_memory_summary("DETECTOR");
+
     /* ---- Voice pipeline (WakeNet + AFE) ---- */
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
@@ -237,7 +251,7 @@ extern "C" void app_main(void)
 
             /* Set capture callback — fires when countdown reaches 0 */
             g_state->on_countdown_done([]() {
-                /* Capture a frame */
+                /* Capture a frame (runs in timer daemon — keep it quick) */
                 if (g_camera == nullptr || !g_camera->is_ok()) {
                     ESP_LOGE(TAG, "Camera not available");
                     if (g_state != nullptr) {
@@ -248,19 +262,37 @@ extern "C" void app_main(void)
 
                 camera_frame_t frame;
                 esp_err_t ret = g_camera->capture_frame(frame);
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
-                                  "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
-                             frame.width, frame.height,
-                             frame.stride, frame.pixel_format);
-                    if (g_state != nullptr) {
-                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
-                    }
-                } else {
+                if (ret != ESP_OK) {
                     ESP_LOGE(TAG, "capture_frame failed: %s",
                              esp_err_to_name(ret));
                     if (g_state != nullptr) {
                         g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+
+                ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
+                              "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
+                         frame.width, frame.height,
+                         frame.stride, frame.pixel_format);
+
+                if (g_state != nullptr) {
+                    g_state->set_state(STATE_ANALYSING);
+                }
+
+                /* Launch async inference in its own PSRAM-backed task */
+                if (g_detector != nullptr) {
+                    g_detector->detect_async(
+                        frame.data, frame.width, frame.height,
+                        [](const char *result) {
+                            if (g_state != nullptr) {
+                                g_state->show_temp(result, 5000,
+                                                   STATE_WAKEWORD);
+                            }
+                        });
+                } else {
+                    if (g_state != nullptr) {
+                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                     }
                 }
             });
