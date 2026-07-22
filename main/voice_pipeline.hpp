@@ -36,6 +36,7 @@ extern "C" {
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
 #include "esp_mn_speech_commands.h"
+#include "esp_process_sdkconfig.h"
 #include "model_path.h"
 #ifdef __cplusplus
 }
@@ -90,6 +91,9 @@ private:
     const esp_afe_sr_iface_t *afe_handle_;
     esp_afe_sr_data_t        *afe_data_;
 
+    /* ---- Model list (loaded from flash, shared with detect task) ------ */
+    srmodel_list_t           *models_;
+
     /* ---- Microphone codec handle (shared with feed task) -------------- */
     esp_codec_dev_handle_t mic_dev_;
 
@@ -115,10 +119,6 @@ private:
 
     /* ---- Confidence threshold ----------------------------------------- */
     float command_threshold_;
-
-    /* ---- Internal helpers --------------------------------------------- */
-    void     _enter_command_mode();
-    void     _exit_command_mode();
 
     /* ---- Internal FreeRTOS task functions (static) -------------------- */
     static void feed_task_fn(void *arg);

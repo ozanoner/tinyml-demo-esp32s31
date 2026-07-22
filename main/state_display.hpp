@@ -19,7 +19,7 @@
 
 static constexpr const char* STATE_WAKEWORD          = "Listening for wake word...";
 static constexpr const char* STATE_COMMAND           = "Listening for command...";
-static constexpr const char* STATE_COMMAND_DETECTED  = "Command: cheese detected";
+static constexpr const char* STATE_COMMAND_DETECTED  = "Command detected!";
 static constexpr const char* STATE_PHOTO             = "Taking photo...";
 static constexpr const char* STATE_ANALYSING         = "Analysing image...";
 static constexpr const char* STATE_NO_OBJECTS        = "No objects detected";

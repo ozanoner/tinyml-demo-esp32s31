@@ -207,7 +207,7 @@ extern "C" void app_main(void)
     };
 
     auto on_command = []() {
-        ESP_LOGI(TAG, ">>> Command 'cheese' detected <<<");
+        ESP_LOGI(TAG, ">>> Command detected <<<");
         if (g_state != nullptr) {
             g_state->set_state(STATE_COMMAND_DETECTED);
         } else {
