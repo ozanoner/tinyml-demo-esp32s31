@@ -290,6 +290,9 @@ extern "C" void app_main(void)
                             /* Show frame + overlays on LCD */
                             ResultDisplay::show(f, w, h, results, []() {
                                 /* Dismissed → return to command mode */
+                                if (g_state != nullptr) {
+                                    g_state->set_state(STATE_COMMAND);
+                                }
                                 if (g_voice != nullptr) {
                                     g_voice->enter_command_mode();
                                 }

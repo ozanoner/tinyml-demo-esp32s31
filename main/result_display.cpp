@@ -46,6 +46,7 @@ private:
     lv_obj_t     *legend_;       /**< legend label at bottom */
     TimerHandle_t timer_;        /**< 10 s auto-dismiss */
     uint8_t      *swapped_;      /**< RGB565 LE buffer (free on dismiss) */
+    lv_img_dsc_t  img_dsc_;     /**< image descriptor (must outlive lv_img) */
     ResultDisplay::on_dismiss_cb_t cb_;
 };
 
@@ -115,15 +116,14 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
     heap_caps_free(const_cast<uint8_t *>(frame));
 
     /* ---- 2. Create LVGL image descriptor (LVGL 9.x) -------------------- */
-    lv_img_dsc_t img_dsc;
-    memset(&img_dsc, 0, sizeof(img_dsc));
-    img_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
-    img_dsc.header.cf     = LV_COLOR_FORMAT_NATIVE;
-    img_dsc.header.w      = w;
-    img_dsc.header.h      = h;
-    img_dsc.header.stride = w * 2;
-    img_dsc.data          = swapped_;
-    img_dsc.data_size     = npixels * 2;
+    memset(&img_dsc_, 0, sizeof(img_dsc_));
+    img_dsc_.header.magic  = LV_IMAGE_HEADER_MAGIC;
+    img_dsc_.header.cf     = LV_COLOR_FORMAT_NATIVE;
+    img_dsc_.header.w      = w;
+    img_dsc_.header.h      = h;
+    img_dsc_.header.stride = w * 2;
+    img_dsc_.data          = swapped_;
+    img_dsc_.data_size     = npixels * 2;
 
     /* ---- 3. Create full-screen image --------------------------------- */
     scr_ = lv_obj_create(lv_scr_act());
@@ -131,9 +131,11 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
     lv_obj_set_pos(scr_, 0, 0);
     lv_obj_set_style_border_width(scr_, 0, 0);
     lv_obj_clear_flag(scr_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(scr_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr_, LV_OPA_COVER, 0);
 
     img_ = lv_img_create(scr_);
-    lv_img_set_src(img_, &img_dsc);
+    lv_img_set_src(img_, &img_dsc_);
     lv_obj_set_pos(img_, 0, 0);
     lv_obj_set_size(img_, w, h);
 
