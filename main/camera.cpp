@@ -31,7 +31,9 @@
 
 static constexpr const char *TAG = "camera";
 
-static constexpr int BUFFER_COUNT = 2;
+static constexpr int BUFFER_COUNT = 3;
+/** Size for one RGB565 frame at 240×240 (2 bytes per pixel). */
+static constexpr uint32_t FRAME_BYTES = 240 * 240 * 2;
 
 /* ---------------------------------------------------------------------------
  *  Helpers
@@ -53,9 +55,9 @@ static int xioctl(int fd, unsigned long request, void *arg)
 Camera::Camera()
     : fb_(nullptr), fb_size_(0)
 {
-    /* Pre-allocate a frame buffer in PSRAM large enough for 640×480 RGB565.
-     * 640 * 480 * 2 = 614,400 bytes. */
-    constexpr uint32_t BUF_SIZE = 640 * 480 * 2;
+    /* Pre-allocate frame buffers in PSRAM — one full frame per USERPTR slot.
+     * 240 * 240 * 2 * BUFFER_COUNT = 115,200 * 3 = 345,600 bytes. */
+    constexpr uint32_t BUF_SIZE = FRAME_BYTES * BUFFER_COUNT;
 
     fb_ = static_cast<uint8_t *>(
         heap_caps_aligned_alloc(64, BUF_SIZE,
@@ -98,7 +100,7 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
         return ESP_FAIL;
     }
 
-    /* ---- 2. Get the default sensor format (set by menuconfig) ---------- */
+    /* ---- 2. Get the default sensor format, then S_FMT to force negotiation */
     struct v4l2_format fmt;
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -109,15 +111,35 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
         return ESP_FAIL;
     }
 
+    /* S_FMT with the same values forces the driver to compute proper
+     * sizeimage/bytesperline.  Without this, G_FMT may return sizeimage=0. */
+    if (xioctl(fd, VIDIOC_S_FMT, &fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_S_FMT failed: %s", strerror(errno));
+        ::close(fd);
+        return ESP_FAIL;
+    }
+
+    /* Read back the final negotiated format */
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (xioctl(fd, VIDIOC_G_FMT, &fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_G_FMT (post-S_FMT) failed: %s", strerror(errno));
+        ::close(fd);
+        return ESP_FAIL;
+    }
+
     uint32_t w   = fmt.fmt.pix.width;
     uint32_t h   = fmt.fmt.pix.height;
     uint32_t pixfmt = fmt.fmt.pix.pixelformat;
     uint32_t stride   = fmt.fmt.pix.bytesperline;
     uint32_t img_size = fmt.fmt.pix.sizeimage;
 
-    /* Derive stride if driver didn't fill it */
+    /* Derive stride / img_size if the driver didn't fill them */
     if (stride == 0) {
         stride = w * 2;  /* RGB565 / YUYV = 2 Bpp */
+    }
+    if (img_size == 0) {
+        img_size = stride * h;
     }
 
     ESP_LOGI(TAG, "Format: %" PRIu32 "x%" PRIu32 "  stride=%" PRIu32
@@ -143,17 +165,16 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
         return ESP_FAIL;
     }
 
-    /* ---- 4. Queue USERPTR buffers — split the fixed buffer into slices --- */
+    /* ---- 4. Queue USERPTR buffers — one full frame per slot ------------- */
     {
-        const uint32_t slice = fb_size_ / BUFFER_COUNT;
         for (int i = 0; i < BUFFER_COUNT; i++) {
             struct v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
             buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             buf.memory      = V4L2_MEMORY_USERPTR;
             buf.index       = i;
-            buf.m.userptr   = reinterpret_cast<unsigned long>(fb_ + i * slice);
-            buf.length      = slice;
+            buf.m.userptr   = reinterpret_cast<unsigned long>(fb_ + i * FRAME_BYTES);
+            buf.length      = FRAME_BYTES;
 
             if (xioctl(fd, VIDIOC_QBUF, &buf) != 0) {
                 ESP_LOGE(TAG, "VIDIOC_QBUF[%d] failed: %s", i, strerror(errno));
