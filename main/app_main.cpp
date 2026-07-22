@@ -1,12 +1,14 @@
 /**
  * @file app_main.cpp
- * @brief TinyML Demo — ESP32-S31 Korvo-1 BSP init + LVGL splash screen
+ * @brief TinyML Demo — ESP32-S31 Korvo-1 BSP init + LVGL UI
  *
  * REQ-002: BSP Integration and Splash Screen
+ * REQ-003: Application State Display
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
- * initialise all BSP peripherals, show an LVGL splash, then return.
- * The LVGL port task handles all display updates independently.
+ * initialise all BSP peripherals, show an LVGL splash, then transition to
+ * the persistent application state label.  The LVGL port task handles all
+ * display updates independently.
  */
 
 extern "C" {
@@ -20,9 +22,23 @@ extern "C" {
 }
 
 #include "lvgl.h"
+#include <new>
 #include "splash.hpp"
+#include "state_display.hpp"
 
 static constexpr const char* TAG = "app";
+
+/* Persistent state display — survives app_main return.
+ * Created by the splash dismiss callback so there is no blank frame. */
+static StateDisplay *g_state = nullptr;
+
+static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
+{
+    g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
+    if (g_state == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate StateDisplay");
+    }
+}
 
 /* ---------------------------------------------------------------------------
  *  Helper: print a single-line memory summary
@@ -155,15 +171,19 @@ extern "C" void app_main(void)
     } else {
         Splash splash(
                       "TinyML Demo\n\nVoice Triggered\nObject Detection",
-                      "Tap anywhere to skip");
+                      "Tap anywhere to skip",
+                      5000,
+                      on_splash_dismissed);
         bsp_display_unlock();
 
         /* Wait until the splash is dismissed (timer/tap) before continuing.
-         * The Splash object must outlive its own timer. */
+         * The Splash object must outlive its own timer.  The dismiss callback
+         * on_splash_dismissed() fires first (under the LVGL task context),
+         * creating g_state before splash labels are deleted — no blank frame. */
         while (splash.is_active()) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 
-    ESP_LOGI(TAG, "BSP init complete. Splash dismissed.");
+    ESP_LOGI(TAG, "Initialisation complete. State: \"%s\"", STATE_WAKEWORD);
 }
