@@ -254,25 +254,7 @@ extern "C" void app_main(void)
                              frame.width, frame.height,
                              frame.stride, frame.pixel_format);
                     if (g_state != nullptr) {
-                        g_state->set_state(STATE_PHOTO);
-                    }
-                    /* Start 2-second timer to revert to wake-word mode */
-                    /* The timer fires once, then the display reverts */
-                    static TimerHandle_t revert_timer = nullptr;
-                    if (revert_timer != nullptr) {
-                        xTimerDelete(revert_timer, 0);
-                    }
-                    revert_timer = xTimerCreate("cam_revert",
-                                                 pdMS_TO_TICKS(2000),
-                                                 pdFALSE,
-                                                 nullptr,
-                                                 [](TimerHandle_t) {
-                        if (g_state != nullptr) {
-                            g_state->set_state(STATE_WAKEWORD);
-                        }
-                    });
-                    if (revert_timer != nullptr) {
-                        xTimerStart(revert_timer, 0);
+                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                     }
                 } else {
                     ESP_LOGE(TAG, "capture_frame failed: %s",

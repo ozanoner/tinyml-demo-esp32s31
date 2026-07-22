@@ -61,10 +61,24 @@ public:
     using countdown_cb_t = std::function<void()>;
     void on_countdown_done(countdown_cb_t cb) { countdown_cb_ = std::move(cb); }
 
+    /**
+     * @brief Show a temporary state and auto-revert after a timeout.
+     *
+     * Cancels any running timer, sets the display to @p text, then starts
+     * a one-shot FreeRTOS timer that reverts to @p revert_to when it fires.
+     * Safe to call from any context (timer daemon, LVGL, task).
+     *
+     * @param text       text to display
+     * @param timeout_ms duration before revert (ms)
+     * @param revert_to  state string to revert to (e.g. STATE_WAKEWORD)
+     */
+    void show_temp(const char *text, uint32_t timeout_ms, const char *revert_to);
+
 private:
     lv_obj_t       *label_;      /**< state label  (owned) */
     TimerHandle_t   timer_;      /**< 3s display revert / 1s countdown tick */
     int             countdown_;  /**< remaining seconds for cheese countdown */
+    const char     *revert_to_;  /**< target state for show_temp timer */
     countdown_cb_t  countdown_cb_; /**< fires when countdown reaches 0 */
 
     /** Timer callback — advances countdown or reverts display. */

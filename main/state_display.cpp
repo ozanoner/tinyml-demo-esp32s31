@@ -27,6 +27,7 @@ StateDisplay::StateDisplay(const char *initial)
     : label_(nullptr)
     , timer_(nullptr)
     , countdown_(0)
+    , revert_to_(STATE_COMMAND)
     , countdown_cb_(nullptr)
 {
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
@@ -118,6 +119,29 @@ void StateDisplay::show_cmd(const char *cmd)
 }
 
 // ---------------------------------------------------------------------------
+//  Public — show_temp
+// ---------------------------------------------------------------------------
+
+void StateDisplay::show_temp(const char *text, uint32_t timeout_ms, const char *revert_to)
+{
+    if (label_ == nullptr) return;
+
+    revert_to_ = revert_to;
+    countdown_ = 0;
+    countdown_cb_ = nullptr;
+
+    lv_label_set_text(label_, text);
+    ESP_LOGI(TAG, "Temp state: %s  timeout=%" PRIu32 "ms  revert=%s",
+             text, timeout_ms, revert_to);
+
+    if (timer_ != nullptr) {
+        xTimerStop(timer_, 0);
+        xTimerChangePeriod(timer_, pdMS_TO_TICKS(timeout_ms), 0);
+        xTimerReset(timer_, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 //  Private — timer callback
 // ---------------------------------------------------------------------------
 
@@ -145,8 +169,8 @@ void StateDisplay::on_timer(TimerHandle_t t)
             self->set_state(STATE_COMMAND);
         }
     } else {
-        /* No countdown — just revert to command listening */
+        /* No countdown — revert to stored target */
         self->countdown_ = 0;
-        self->set_state(STATE_COMMAND);
+        self->set_state(self->revert_to_);
     }
 }

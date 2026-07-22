@@ -12,8 +12,6 @@
 #include "camera.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include <cstring>
 #include <cerrno>
@@ -22,7 +20,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <linux/videodev2.h>
 
 /* BSP device name macro */
