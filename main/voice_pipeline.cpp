@@ -319,8 +319,6 @@ void VoicePipeline::_enter_command_mode()
 {
     command_mode_ = true;
     afe_handle_->disable_wakenet(afe_data_);
-    /* Clean MultiNet state so it's ready for the first command phrase */
-    multinet_->clean(mn_data_);
     start_command_timeout();
     ESP_LOGI(TAG, "Command mode: WakeNet disabled, multiword listening");
 }
