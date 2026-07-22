@@ -44,7 +44,7 @@ extern "C" {
 
 class VoicePipeline final {
 public:
-    using callback_t = std::function<void()>;
+    using callback_t = std::function<void(const char *)>;
 
     /**
      * @brief Construct the voice pipeline.

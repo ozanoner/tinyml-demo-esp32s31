@@ -25,6 +25,8 @@ extern "C" {
 
 #include "lvgl.h"
 #include <new>
+#include <cstdio>
+#include <cstring>
 #include "splash.hpp"
 #include "state_display.hpp"
 #include "voice_pipeline.hpp"
@@ -38,6 +40,17 @@ static StateDisplay *g_state = nullptr;
 /* Voice pipeline (WakeNet + AFE) — owns feed/detect tasks.
  * Created after splash dismissal, survives app_main return. */
 static VoicePipeline *g_voice = nullptr;
+
+/* 3-second timer for command display auto-revert */
+static TimerHandle_t g_cmd_display_timer = nullptr;
+static constexpr uint32_t CMD_DISPLAY_MS = 3000;
+
+static void on_cmd_display_timer(TimerHandle_t)
+{
+    if (g_state != nullptr) {
+        g_state->set_state(STATE_COMMAND);
+    }
+}
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
@@ -198,7 +211,7 @@ extern "C" void app_main(void)
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
 
-    auto on_wakeword = []() {
+    auto on_wakeword = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_COMMAND);
         } else {
@@ -206,22 +219,31 @@ extern "C" void app_main(void)
         }
     };
 
-    auto on_command = []() {
-        ESP_LOGI(TAG, ">>> Command detected <<<");
+    auto on_command = [](const char *cmd) {
+        ESP_LOGI(TAG, ">>> Command detected: '%s' <<<", cmd);
         if (g_state != nullptr) {
-            g_state->set_state(STATE_COMMAND_DETECTED);
-        } else {
-            ESP_LOGE(TAG, "on_command: g_state is null");
+            static char buf[64];
+            snprintf(buf, sizeof(buf), "\"%s\" detected", cmd);
+            g_state->set_state(buf);
+        }
+        /* Revert to command listening after 3 seconds */
+        if (g_cmd_display_timer != nullptr) {
+            xTimerStop(g_cmd_display_timer, 0);
+            xTimerReset(g_cmd_display_timer, 0);
         }
     };
 
-    auto on_timeout = []() {
+    auto on_timeout = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_WAKEWORD);
         } else {
             ESP_LOGE(TAG, "on_timeout: g_state is null");
         }
     };
+
+    /* Create 3-second display revert timer */
+    g_cmd_display_timer = xTimerCreate("cmd_disp", pdMS_TO_TICKS(CMD_DISPLAY_MS),
+                                       pdFALSE, nullptr, on_cmd_display_timer);
 
     g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
                                                std::move(on_command),

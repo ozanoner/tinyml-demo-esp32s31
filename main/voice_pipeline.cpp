@@ -411,7 +411,7 @@ void VoicePipeline::detect_task_fn(void *arg)
             ESP_LOGI(TAG, "Command mode: multiword listening (15s)");
 
             if (self->on_wakeword_) {
-                self->on_wakeword_();
+                self->on_wakeword_("");
             }
         }
 
@@ -429,7 +429,7 @@ void VoicePipeline::detect_task_fn(void *arg)
                 self->cancel_command_timeout();
 
                 if (self->on_timeout_) {
-                    self->on_timeout_();
+                    self->on_timeout_("");
                 }
                 continue;
             }
@@ -446,7 +446,7 @@ void VoicePipeline::detect_task_fn(void *arg)
                                  mn_result->phrase_id[0], (double)prob);
 
                         if (self->on_command_) {
-                            self->on_command_();
+                            self->on_command_(mn_result->string);
                         }
                     }
                 }
@@ -479,6 +479,6 @@ void VoicePipeline::timeout_timer_fn(TimerHandle_t timer)
     self->command_mode_ = false;
 
     if (self->on_timeout_) {
-        self->on_timeout_();
+        self->on_timeout_("");
     }
 }
