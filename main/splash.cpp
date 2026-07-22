@@ -82,10 +82,16 @@ void Splash::_dismiss(Reason r)
 {
     ESP_LOGI(TAG, "Splash dismissed (%s)",
              r == Reason::TIMEOUT ? "timeout" : "touch");
-    _cleanup();
+
+    /* Fire the callback BEFORE cleanup so the next UI element (e.g.
+     * StateDisplay) is created while splash labels still exist.  This
+     * guarantees no blank frame between splash dismissal and the first
+     * application state. */
     if (cb_) {
         cb_(r, cb_arg_);
     }
+
+    _cleanup();
 }
 
 void Splash::_cleanup()
