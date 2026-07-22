@@ -194,8 +194,8 @@ void Detector::task_entry(void *arg)
     ESP_LOGI(TAG, "task done  ok=%d  detections=%u  t=%lld ms",
              ok, (unsigned)results.size(), (t_inf / 1000));
 
-    /* Format top-2 results */
-    char buf[64];
+    /* Format top-N results string for display */
+    char buf[64] = "No objects detected";
     if (ok && !results.empty()) {
         auto it = results.begin();
         int printed = snprintf(buf, sizeof(buf), "obj %d %.0f%%",
@@ -205,15 +205,16 @@ void Detector::task_entry(void *arg)
                      " / obj %d %.0f%%",
                      it->category, (double)(it->score * 100.0f));
         }
-    } else {
-        snprintf(buf, sizeof(buf), "No objects detected");
     }
+    ESP_LOGI(TAG, "Result: \"%s\"", buf);
 
+    /* Callback now receives results + frame data for display rendering */
     if (ia->cb) {
-        ia->cb(buf);
+        ia->cb(results, ia->data, ia->width, ia->height);
+        /* Callback owns ia->data now (freed by ResultDisplay) */
+    } else {
+        heap_caps_free(ia->data);
     }
-
-    heap_caps_free(ia->data);
     delete ia;
     vTaskDelete(nullptr);
 }

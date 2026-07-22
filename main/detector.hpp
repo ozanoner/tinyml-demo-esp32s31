@@ -27,8 +27,10 @@ public:
 
     bool is_ok() const { return detect_ != nullptr; }
 
-    /** Callback invoked with result string (e.g. "obj 1 85% / obj 3 42%"). */
-    using result_cb_t = std::function<void(const char *)>;
+    /** Callback receives detection results + owned frame buffer. Caller must free frame. */
+    using result_cb_t = std::function<void(
+        const std::list<dl::detect::result_t> &results,
+        const uint8_t *frame, uint32_t width, uint32_t height)>;
 
     /**
      * @brief Run detection on a camera frame (synchronous).

@@ -34,6 +34,7 @@ extern "C" {
 #include "state_display.hpp"
 #include "camera.hpp"
 #include "detector.hpp"
+#include "result_display.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -284,11 +285,15 @@ extern "C" void app_main(void)
                 if (g_detector != nullptr) {
                     g_detector->detect_async(
                         frame.data, frame.width, frame.height,
-                        [](const char *result) {
-                            if (g_state != nullptr) {
-                                g_state->show_temp(result, 5000,
-                                                   STATE_WAKEWORD);
-                            }
+                        [](const std::list<dl::detect::result_t> &results,
+                           const uint8_t *f, uint32_t w, uint32_t h) {
+                            /* Show frame + overlays on LCD */
+                            ResultDisplay::show(f, w, h, results, []() {
+                                /* Dismissed → return to command mode */
+                                if (g_voice != nullptr) {
+                                    g_voice->enter_command_mode();
+                                }
+                            });
                         });
                 } else {
                     if (g_state != nullptr) {
