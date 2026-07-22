@@ -6,6 +6,8 @@
  * REQ-003: Application State Display
  * REQ-004: WakeNet Wake-Word Detection
  * REQ-005: MultiNet Command Detection
+ * REQ-006: Camera Capture
+ * REQ-007: Object Detection (COCO YOLO11n via ESP-DL)
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
  * initialise all BSP peripherals, show an LVGL splash, then transition to
@@ -20,6 +22,7 @@ extern "C" {
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "bsp/esp32_s31_korvo_1.h"
 }
 
@@ -30,6 +33,7 @@ extern "C" {
 #include "splash.hpp"
 #include "state_display.hpp"
 #include "camera.hpp"
+#include "detector.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -45,6 +49,70 @@ static VoicePipeline *g_voice = nullptr;
 /* Camera capture — owns the fixed PSRAM frame buffer.
  * Created after splash dismissal, before voice pipeline. */
 static Camera *g_camera = nullptr;
+
+/* COCO object detector — created after camera, runs inference on frames. */
+static Detector *g_detector = nullptr;
+
+/* ---------------------------------------------------------------------------
+ *  Inference task — runs in its own PSRAM stack, not in the timer daemon
+ * ------------------------------------------------------------------------- */
+struct infer_arg_t {
+    uint8_t  *data;
+    uint32_t  width;
+    uint32_t  height;
+};
+
+static StackType_t infer_stack[8 * 1024 / sizeof(StackType_t)]
+    __attribute__((section(".ext_ram.bss")));  // in PSRAM
+static StaticTask_t infer_tcb;
+
+static void inference_task(void *arg)
+{
+    auto *ia = static_cast<infer_arg_t *>(arg);
+    int64_t t_start = esp_timer_get_time();
+
+    ESP_LOGI(TAG, "INF: task started  t=%lld ms", (t_start / 1000));
+
+    if (g_detector != nullptr && g_detector->is_ok()) {
+        ESP_LOGI(TAG, "INF: calling detect()  w=%" PRIu32 " h=%" PRIu32,
+                 ia->width, ia->height);
+
+        std::list<dl::detect::result_t> results;
+        bool ok = g_detector->detect(ia->data, ia->width, ia->height, results);
+
+        int64_t t_inf = esp_timer_get_time();
+        ESP_LOGI(TAG, "INF: detect() returned ok=%d  detections=%u  t=%lld ms",
+                 ok, (unsigned)results.size(), (t_inf / 1000));
+
+        if (ok && !results.empty()) {
+            char buf[64];
+            const auto &r = results.front();
+            snprintf(buf, sizeof(buf), "obj %d  %.0f%%",
+                     r.category, (double)(r.score * 100.0f));
+            ESP_LOGI(TAG, "INF: showing result \"%s\"", buf);
+            if (g_state != nullptr) {
+                g_state->show_temp(buf, 5000, STATE_WAKEWORD);
+            }
+        } else {
+            ESP_LOGI(TAG, "INF: no objects detected");
+            if (g_state != nullptr) {
+                g_state->show_temp(STATE_NO_OBJECTS, 3000, STATE_WAKEWORD);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "INF: detector not available (null=%d ok=%d)",
+                 g_detector == nullptr,
+                 g_detector != nullptr ? g_detector->is_ok() : 0);
+        if (g_state != nullptr) {
+            g_state->set_state(STATE_WAKEWORD);
+        }
+    }
+
+    heap_caps_free(ia->data);
+    heap_caps_free(ia);
+    ESP_LOGI(TAG, "INF: task done  t=%lld ms", (esp_timer_get_time() / 1000));
+    vTaskDelete(nullptr);
+}
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
@@ -73,10 +141,10 @@ static void print_memory_summary(const char *label)
     constexpr size_t total_psram = 16 * 1024 * 1024;
 
     if (free_sram < total_sram / 5) {
-        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%!");
     }
     if (free_psram < total_psram / 5) {
-        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%%!");
+        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%!");
     }
 }
 
@@ -209,6 +277,13 @@ extern "C" void app_main(void)
     }
     print_memory_summary("CAMERA");
 
+    /* ---- Object detector (COCO YOLO11n via ESP-DL) -------------------- */
+    g_detector = new (std::nothrow) Detector();
+    if (g_detector != nullptr && !g_detector->is_ok()) {
+        ESP_LOGE(TAG, "Detector init failed — inference disabled");
+    }
+    print_memory_summary("DETECTOR");
+
     /* ---- Voice pipeline (WakeNet + AFE) ---- */
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
@@ -237,7 +312,7 @@ extern "C" void app_main(void)
 
             /* Set capture callback — fires when countdown reaches 0 */
             g_state->on_countdown_done([]() {
-                /* Capture a frame */
+                /* Capture a frame (runs in timer daemon — keep it quick) */
                 if (g_camera == nullptr || !g_camera->is_ok()) {
                     ESP_LOGE(TAG, "Camera not available");
                     if (g_state != nullptr) {
@@ -248,17 +323,58 @@ extern "C" void app_main(void)
 
                 camera_frame_t frame;
                 esp_err_t ret = g_camera->capture_frame(frame);
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
-                                  "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
-                             frame.width, frame.height,
-                             frame.stride, frame.pixel_format);
-                    if (g_state != nullptr) {
-                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
-                    }
-                } else {
+                if (ret != ESP_OK) {
                     ESP_LOGE(TAG, "capture_frame failed: %s",
                              esp_err_to_name(ret));
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+
+                ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
+                              "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
+                         frame.width, frame.height,
+                         frame.stride, frame.pixel_format);
+
+                if (g_state != nullptr) {
+                    g_state->set_state(STATE_ANALYSING);
+                }
+
+                /* Launch inference in its own task (timer stack too small).
+                 * Copy frame data so the task owns it. */
+                size_t fsz = frame.width * frame.height * 2;
+                auto *fdup = static_cast<uint8_t *>(
+                    heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
+                if (fdup == nullptr) {
+                    ESP_LOGE(TAG, "OOM for frame copy");
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+                memcpy(fdup, frame.data, fsz);
+
+                auto *ia = static_cast<infer_arg_t *>(
+                    heap_caps_malloc(sizeof(infer_arg_t), MALLOC_CAP_SPIRAM));
+                if (ia == nullptr) {
+                    ESP_LOGE(TAG, "OOM for infer arg");
+                    heap_caps_free(fdup);
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+                ia->data   = fdup;
+                ia->width  = frame.width;
+                ia->height = frame.height;
+
+                TaskHandle_t th = xTaskCreateStatic(inference_task, "detect",
+                    8 * 1024, ia, 5, infer_stack, &infer_tcb);
+                if (th == nullptr) {
+                    ESP_LOGE(TAG, "Failed to create detect task");
+                    heap_caps_free(ia->data);
+                    heap_caps_free(ia);
                     if (g_state != nullptr) {
                         g_state->set_state(STATE_WAKEWORD);
                     }
