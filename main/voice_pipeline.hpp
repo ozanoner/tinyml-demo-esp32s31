@@ -26,6 +26,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "esp_codec_dev.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
@@ -74,6 +75,9 @@ private:
     /* ---- AFE data ------------------------------------------------------ */
     const esp_afe_sr_iface_t *afe_handle_;
     esp_afe_sr_data_t        *afe_data_;
+
+    /* ---- Microphone codec handle (shared with feed task) -------------- */
+    esp_codec_dev_handle_t mic_dev_;
 
     /* ---- Tasks --------------------------------------------------------- */
     TaskHandle_t  feed_task_;

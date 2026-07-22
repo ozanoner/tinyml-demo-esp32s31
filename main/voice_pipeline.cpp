@@ -18,6 +18,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
                              callback_t on_timeout)
     : afe_handle_(nullptr),
       afe_data_(nullptr),
+      mic_dev_(nullptr),
       feed_task_(nullptr),
       detect_task_(nullptr),
       task_flag_(0),
@@ -28,29 +29,37 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     ESP_LOGI(TAG, "Voice pipeline starting...");
 
     /* ---- 1. Initialise microphone codec at 16 kHz mono ---------------- */
-    esp_codec_dev_handle_t mic_dev = bsp_audio_codec_microphone_init();
-    if (mic_dev == nullptr) {
+    mic_dev_ = bsp_audio_codec_microphone_init();
+    if (mic_dev_ == nullptr) {
         ESP_LOGE(TAG, "bsp_audio_codec_microphone_init failed");
         return;
     }
 
     esp_codec_dev_sample_info_t mic_fs = {};
     mic_fs.bits_per_sample = 16;
-    mic_fs.channel         = 1;
+    mic_fs.channel         = 2;
     mic_fs.sample_rate     = 16000;
-    esp_err_t ret = esp_codec_dev_open(mic_dev, &mic_fs);
+    esp_err_t ret = esp_codec_dev_open(mic_dev_, &mic_fs);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_codec_dev_open (mic) failed: %s", esp_err_to_name(ret));
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
-    ESP_LOGI(TAG, "Mic opened: 16 kHz, mono, 16-bit");
+
+    /* Set microphone input gain */
+    ret = esp_codec_dev_set_in_gain(mic_dev_, 24.0f);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_codec_dev_set_in_gain: %s", esp_err_to_name(ret));
+    }
+    ESP_LOGI(TAG, "Mic opened: 16 kHz, stereo, 16-bit");
 
     /* ---- 2. Load SR models from the "model" flash partition ----------- */
     srmodel_list_t *models = esp_srmodel_init("model");
     if (models == nullptr) {
         ESP_LOGE(TAG, "esp_srmodel_init failed — no model partition?");
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -64,7 +73,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
                                                AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (afe_config == nullptr) {
         ESP_LOGE(TAG, "afe_config_init failed");
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -80,7 +90,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     if (afe_handle_ == nullptr) {
         ESP_LOGE(TAG, "esp_afe_handle_from_config failed");
         afe_config_free(afe_config);
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -89,10 +100,16 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
 
     if (afe_data_ == nullptr) {
         ESP_LOGE(TAG, "afe_handle_->create_from_config failed");
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
     ESP_LOGI(TAG, "AFE created");
+
+    /* Lower WakeNet threshold for better sensitivity */
+    afe_handle_->set_wakenet_threshold(afe_data_, 1, 0.3f);
+    afe_handle_->set_wakenet_threshold(afe_data_, 2, 0.3f);
+    ESP_LOGI(TAG, "WakeNet threshold set to 0.3");
 
     /* ---- 4. Create timeout timer (15 s, one-shot, auto-reload = false) */
     timeout_timer_ = xTimerCreate("voice_timeout",
@@ -103,7 +120,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     if (timeout_timer_ == nullptr) {
         ESP_LOGE(TAG, "xTimerCreate failed");
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -116,7 +134,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         task_flag_ = 0;
         xTimerDelete(timeout_timer_, 0);
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -127,7 +146,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         vTaskDelete(feed_task_);
         xTimerDelete(timeout_timer_, 0);
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev);
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
         return;
     }
 
@@ -166,6 +186,12 @@ VoicePipeline::~VoicePipeline()
         afe_handle_->destroy(afe_data_);
         afe_data_ = nullptr;
     }
+
+    /* Close mic codec */
+    if (mic_dev_ != nullptr) {
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,10 +223,9 @@ void VoicePipeline::feed_task_fn(void *arg)
 {
     auto *self = static_cast<VoicePipeline *>(arg);
 
-    /* Obtain the mic codec handle — the AFE config was created with it */
-    esp_codec_dev_handle_t mic_dev = bsp_audio_codec_microphone_init();
+    esp_codec_dev_handle_t mic_dev = self->mic_dev_;
     if (mic_dev == nullptr) {
-        ESP_LOGE(TAG, "feed: cannot get mic handle");
+        ESP_LOGE(TAG, "feed: no mic handle");
         self->task_flag_ = 0;
         vTaskDelete(nullptr);
         return;
@@ -257,12 +282,20 @@ void VoicePipeline::detect_task_fn(void *arg)
     }
 
     ESP_LOGI(TAG, "Detect task started");
+    unsigned log_ticks = 0;
 
     while (self->task_flag_) {
         afe_fetch_result_t *res = self->afe_handle_->fetch(self->afe_data_);
         if (res == nullptr || res->ret_value == ESP_FAIL) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+
+        /* Periodic audio level debug (every ~100 frames ≈ 3s) */
+        if (++log_ticks % 100 == 0) {
+            ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  wake:%d  rbuf:%.0f%%",
+                     (double)res->data_volume, res->vad_state,
+                     res->wakeup_state, (double)(res->ringbuff_free_pct * 100.0f));
         }
 
         /* Wake word detected? */
