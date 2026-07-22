@@ -29,6 +29,7 @@ extern "C" {
 #include <cstring>
 #include "splash.hpp"
 #include "state_display.hpp"
+#include "camera.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -40,6 +41,10 @@ static StateDisplay *g_state = nullptr;
 /* Voice pipeline (WakeNet + AFE) — owns feed/detect tasks.
  * Created after splash dismissal, survives app_main return. */
 static VoicePipeline *g_voice = nullptr;
+
+/* Camera capture — owns the fixed PSRAM frame buffer.
+ * Created after splash dismissal, before voice pipeline. */
+static Camera *g_camera = nullptr;
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
@@ -196,6 +201,14 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Initialisation complete. State: \"%s\"", STATE_WAKEWORD);
 
+    /* ---- Camera (pre-allocates PSRAM frame buffer) -------------------- */
+    g_camera = new (std::nothrow) Camera();
+    if (g_camera != nullptr && !g_camera->is_ok()) {
+        ESP_LOGE(TAG, "Camera init failed — frames will not be captured");
+        /* Non-fatal: the app can still run voice commands without camera */
+    }
+    print_memory_summary("CAMERA");
+
     /* ---- Voice pipeline (WakeNet + AFE) ---- */
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
@@ -210,7 +223,67 @@ extern "C" void app_main(void)
 
     auto on_command = [](const char *cmd) {
         ESP_LOGI(TAG, ">>> Command detected: '%s' <<<", cmd);
-        if (g_state != nullptr) {
+        if (g_state == nullptr) return;
+
+        if (strcmp(cmd, "cheese") == 0) {
+            /* Exit command mode so the detect task stops listening */
+            if (g_voice != nullptr) {
+                g_voice->exit_command_mode();
+                g_voice->cancel_command_timeout();
+            }
+
+            /* Start the 3-second countdown */
+            g_state->show_cmd(cmd);
+
+            /* Set capture callback — fires when countdown reaches 0 */
+            g_state->on_countdown_done([]() {
+                /* Capture a frame */
+                if (g_camera == nullptr || !g_camera->is_ok()) {
+                    ESP_LOGE(TAG, "Camera not available");
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+
+                camera_frame_t frame;
+                esp_err_t ret = g_camera->capture_frame(frame);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
+                                  "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
+                             frame.width, frame.height,
+                             frame.stride, frame.pixel_format);
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_PHOTO);
+                    }
+                    /* Start 2-second timer to revert to wake-word mode */
+                    /* The timer fires once, then the display reverts */
+                    static TimerHandle_t revert_timer = nullptr;
+                    if (revert_timer != nullptr) {
+                        xTimerDelete(revert_timer, 0);
+                    }
+                    revert_timer = xTimerCreate("cam_revert",
+                                                 pdMS_TO_TICKS(2000),
+                                                 pdFALSE,
+                                                 nullptr,
+                                                 [](TimerHandle_t) {
+                        if (g_state != nullptr) {
+                            g_state->set_state(STATE_WAKEWORD);
+                        }
+                    });
+                    if (revert_timer != nullptr) {
+                        xTimerStart(revert_timer, 0);
+                    }
+                } else {
+                    ESP_LOGE(TAG, "capture_frame failed: %s",
+                             esp_err_to_name(ret));
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                }
+            });
+        } else {
+            /* Non-cheese command: show and revert after 3 s */
             g_state->show_cmd(cmd);
         }
     };
@@ -222,8 +295,6 @@ extern "C" void app_main(void)
             ESP_LOGE(TAG, "on_timeout: g_state is null");
         }
     };
-
-    /* Create 3-second display revert timer */
 
     g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
                                                std::move(on_command),

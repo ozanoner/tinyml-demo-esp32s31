@@ -27,6 +27,7 @@ StateDisplay::StateDisplay(const char *initial)
     : label_(nullptr)
     , timer_(nullptr)
     , countdown_(0)
+    , countdown_cb_(nullptr)
 {
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr == nullptr) {
@@ -132,8 +133,19 @@ void StateDisplay::on_timer(TimerHandle_t t)
         snprintf(buf, sizeof(buf), "cheese %d...", self->countdown_);
         self->set_state(buf);
         xTimerReset(self->timer_, 0);
+    } else if (self->countdown_ == 1) {
+        /* Countdown reached zero — fire the callback, then revert */
+        self->countdown_ = 0;
+        /* Fire capture callback before reverting display */
+        if (self->countdown_cb_) {
+            auto cb = std::move(self->countdown_cb_);
+            self->countdown_cb_ = nullptr;  // one-shot
+            cb();
+        } else {
+            self->set_state(STATE_COMMAND);
+        }
     } else {
-        /* Countdown done or no countdown — revert to command listening */
+        /* No countdown — just revert to command listening */
         self->countdown_ = 0;
         self->set_state(STATE_COMMAND);
     }

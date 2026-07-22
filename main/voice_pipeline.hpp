@@ -79,6 +79,15 @@ public:
     void cancel_command_timeout();
 
     /**
+     * @brief Exit command mode immediately.
+     *
+     * Sets command_mode_ = false so the detect task loop returns to
+     * wake-word detection on its next iteration.  Can be called from
+     * any context (interrupt-safe via volatile flag).
+     */
+    void exit_command_mode() { command_mode_ = false; }
+
+    /**
      * @brief Set confidence threshold for command detection.
      *
      * Commands with probability below this threshold are ignored.
