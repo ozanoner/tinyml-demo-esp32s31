@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/poll.h>
 #include <linux/videodev2.h>
 
 /* BSP device name macro */
@@ -189,36 +190,52 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
         return ESP_FAIL;
     }
 
-    /* ---- 6. Dequeue exactly one frame ---------------------------------- */
-    struct v4l2_buffer buf;
-    memset(&buf, 0, sizeof(buf));
-    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_USERPTR;
-
+    /* ---- 6. Dequeue exactly one frame (with 500 ms timeout) ------------ */
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd     = fd;
+    pfd.events = POLLIN;
+    int pret = poll(&pfd, 1, 500);
     esp_err_t ret = ESP_OK;
-    if (xioctl(fd, VIDIOC_DQBUF, &buf) != 0) {
-        ESP_LOGE(TAG, "VIDIOC_DQBUF failed: %s", strerror(errno));
-        ret = ESP_FAIL;
-    } else {
-        uint32_t bytes = (buf.bytesused < img_size) ? buf.bytesused : img_size;
-        ESP_LOGI(TAG, "Captured: %" PRIu32 " bytes  %" PRIu32 "x%" PRIu32,
-                 bytes, w, h);
-
-        /* With USERPTR the kernel wrote directly into our buffer.
-         * If the hardware used a slice other than slice 0, memmove to front. */
-        if (buf.index != 0 &&
-            reinterpret_cast<void *>(buf.m.userptr) != fb_) {
-            memmove(fb_,
-                    reinterpret_cast<const void *>(buf.m.userptr), bytes);
+    if (pret <= 0) {
+        if (pret == 0) {
+            ESP_LOGE(TAG, "VIDIOC_DQBUF timed out after 500 ms");
+        } else {
+            ESP_LOGE(TAG, "poll() failed: %s", strerror(errno));
         }
-
-        /* Fill the output struct */
-        frame.data         = fb_;
-        frame.width        = w;
-        frame.height       = h;
-        frame.stride       = stride;
-        frame.pixel_format = pixfmt;
+        ret = ESP_FAIL;
+        goto stop_stream;
     }
+
+    {
+        struct v4l2_buffer buf;
+        memset(&buf, 0, sizeof(buf));
+        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_USERPTR;
+
+        if (xioctl(fd, VIDIOC_DQBUF, &buf) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_DQBUF failed: %s", strerror(errno));
+            ret = ESP_FAIL;
+        } else {
+            uint32_t bytes = (buf.bytesused < img_size) ? buf.bytesused : img_size;
+            ESP_LOGI(TAG, "Captured: %" PRIu32 " bytes  %" PRIu32 "x%" PRIu32,
+                     bytes, w, h);
+
+            if (buf.index != 0 &&
+                reinterpret_cast<void *>(buf.m.userptr) != fb_) {
+                memmove(fb_,
+                        reinterpret_cast<const void *>(buf.m.userptr), bytes);
+            }
+
+            frame.data         = fb_;
+            frame.width        = w;
+            frame.height       = h;
+            frame.stride       = stride;
+            frame.pixel_format = pixfmt;
+        }
+    }
+
+stop_stream:
 
     /* ---- 7. Stop streaming --------------------------------------------- */
     if (xioctl(fd, VIDIOC_STREAMOFF, &type) != 0) {

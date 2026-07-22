@@ -135,7 +135,8 @@ void StateDisplay::show_temp(const char *text, uint32_t timeout_ms, const char *
              text, timeout_ms, revert_to);
 
     if (timer_ != nullptr) {
-        xTimerStop(timer_, 0);
+        /* Timer may be dormant (one-shot has fired) — xTimerReset handles that.
+         * Do NOT call xTimerStop first; it returns pdFAIL on a dormant timer. */
         xTimerChangePeriod(timer_, pdMS_TO_TICKS(timeout_ms), 0);
         xTimerReset(timer_, 0);
     }
