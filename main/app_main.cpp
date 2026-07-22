@@ -34,6 +34,10 @@ static constexpr const char* TAG = "app";
  * Created by the splash dismiss callback so there is no blank frame. */
 static StateDisplay *g_state = nullptr;
 
+/* Voice pipeline (WakeNet + AFE) — owns feed/detect tasks.
+ * Created after splash dismissal, survives app_main return. */
+static VoicePipeline *g_voice = nullptr;
+
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
     g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
@@ -192,23 +196,26 @@ extern "C" void app_main(void)
     /* ---- Voice pipeline (WakeNet + AFE) ---- */
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
-    static VoicePipeline *s_voice = nullptr;
 
     auto on_wakeword = []() {
         if (g_state != nullptr) {
             g_state->set_state(STATE_COMMAND);
+        } else {
+            ESP_LOGE(TAG, "on_wakeword: g_state is null");
         }
     };
 
     auto on_timeout = []() {
         if (g_state != nullptr) {
             g_state->set_state(STATE_WAKEWORD);
+        } else {
+            ESP_LOGE(TAG, "on_timeout: g_state is null");
         }
     };
 
-    s_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+    g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
                                                std::move(on_timeout));
-    if (s_voice == nullptr) {
+    if (g_voice == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate VoicePipeline");
     }
 }
