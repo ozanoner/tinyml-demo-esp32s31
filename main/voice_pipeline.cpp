@@ -1,6 +1,6 @@
 /**
  * @file voice_pipeline.cpp
- * @brief VoicePipeline implementation — AFE + WakeNet + timeout.
+ * @brief VoicePipeline implementation — AFE + WakeNet + MultiNet + timeout.
  */
 
 #include "voice_pipeline.hpp"
@@ -15,20 +15,26 @@ static constexpr const char *TAG = "voice";
 // ---------------------------------------------------------------------------
 
 VoicePipeline::VoicePipeline(callback_t on_wakeword,
+                             callback_t on_command,
                              callback_t on_timeout)
     : afe_handle_(nullptr),
       afe_data_(nullptr),
       mic_dev_(nullptr),
+      multinet_(nullptr),
+      mn_data_(nullptr),
       feed_task_(nullptr),
       detect_task_(nullptr),
       task_flag_(0),
+      command_mode_(false),
       timeout_timer_(nullptr),
       on_wakeword_(std::move(on_wakeword)),
-      on_timeout_(std::move(on_timeout))
+      on_command_(std::move(on_command)),
+      on_timeout_(std::move(on_timeout)),
+      command_threshold_(0.0f)
 {
     ESP_LOGI(TAG, "Voice pipeline starting...");
 
-    /* ---- 1. Initialise microphone codec at 16 kHz mono ---------------- */
+    /* ---- 1. Initialise microphone codec at 16 kHz stereo -------------- */
     mic_dev_ = bsp_audio_codec_microphone_init();
     if (mic_dev_ == nullptr) {
         ESP_LOGE(TAG, "bsp_audio_codec_microphone_init failed");
@@ -68,7 +74,6 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     }
 
     /* ---- 3. Configure AFE -------------------------------------------- */
-    /* Korvo-1 has two microphones — input format "MM" */
     afe_config_t *afe_config = afe_config_init("MM", models,
                                                AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (afe_config == nullptr) {
@@ -78,7 +83,6 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         return;
     }
 
-    /* Log the selected wake-word model */
     if (afe_config->wakenet_model_name != nullptr) {
         ESP_LOGI(TAG, "WakeNet model: %s", afe_config->wakenet_model_name);
     }
@@ -111,7 +115,78 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     afe_handle_->set_wakenet_threshold(afe_data_, 2, 0.3f);
     ESP_LOGI(TAG, "WakeNet threshold set to 0.3");
 
-    /* ---- 4. Create timeout timer (15 s, one-shot, auto-reload = false) */
+    /* ---- 4. Initialise MultiNet --------------------------------------- */
+    /* esp_srmodel_filter returns a pointer into the models list — safe to
+     * pass to esp_mn_handle_from_name which only reads it. */
+    const char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
+    if (mn_name == nullptr) {
+        ESP_LOGE(TAG, "No MultiNet model found (filtered with ESP_MN_ENGLISH)");
+        afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+        return;
+    }
+    ESP_LOGI(TAG, "MultiNet model: %s", mn_name);
+
+    /* The API takes char* but only reads it — safe const_cast */
+    multinet_ = esp_mn_handle_from_name(const_cast<char *>(mn_name));
+    if (multinet_ == nullptr) {
+        ESP_LOGE(TAG, "esp_mn_handle_from_name failed for '%s'", mn_name);
+        afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+        return;
+    }
+
+    /* VAD timeout: 5760 ms (typical for mn7, ~5.8 s of silence -> TIMEOUT) */
+    constexpr int VAD_TIMEOUT_MS = 5760;
+    mn_data_ = multinet_->create(mn_name, VAD_TIMEOUT_MS);
+    if (mn_data_ == nullptr) {
+        ESP_LOGE(TAG, "multinet->create failed");
+        afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+        return;
+    }
+    ESP_LOGI(TAG, "MultiNet created");
+
+    /* Register speech command "cheese" */
+    esp_err_t cmd_ret = esp_mn_commands_alloc(multinet_, mn_data_);
+    if (cmd_ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_mn_commands_alloc failed: %s", esp_err_to_name(cmd_ret));
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
+        afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+        return;
+    }
+
+    cmd_ret = esp_mn_commands_add(1, "cheese");
+    if (cmd_ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_mn_commands_add failed: %s", esp_err_to_name(cmd_ret));
+        esp_mn_commands_free();
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
+        afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
+        esp_codec_dev_close(mic_dev_);
+        mic_dev_ = nullptr;
+        return;
+    }
+
+    esp_mn_error_t *mn_err = esp_mn_commands_update();
+    if (mn_err != nullptr) {
+        ESP_LOGW(TAG, "esp_mn_commands_update returned %d error(s)",
+                 mn_err->num);
+    }
+    ESP_LOGI(TAG, "MultiNet commands registered: [cheese]");
+
+    /* ---- 5. Create timeout timer (15 s, one-shot, auto-reload = false) */
     timeout_timer_ = xTimerCreate("voice_timeout",
                                   pdMS_TO_TICKS(15000),
                                   pdFALSE,              /* auto-reload = off */
@@ -119,13 +194,17 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
                                   timeout_timer_fn);
     if (timeout_timer_ == nullptr) {
         ESP_LOGE(TAG, "xTimerCreate failed");
+        esp_mn_commands_free();
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
         afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
         esp_codec_dev_close(mic_dev_);
         mic_dev_ = nullptr;
         return;
     }
 
-    /* ---- 5. Start feed + detect tasks --------------------------------- */
+    /* ---- 6. Start feed + detect tasks --------------------------------- */
     task_flag_ = 1;
 
     if (xTaskCreatePinnedToCore(feed_task_fn, "feed", 8 * 1024,
@@ -133,19 +212,27 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         ESP_LOGE(TAG, "feed task creation failed");
         task_flag_ = 0;
         xTimerDelete(timeout_timer_, 0);
+        esp_mn_commands_free();
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
         afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
         esp_codec_dev_close(mic_dev_);
         mic_dev_ = nullptr;
         return;
     }
 
-    if (xTaskCreatePinnedToCore(detect_task_fn, "detect", 4 * 1024,
+    if (xTaskCreatePinnedToCore(detect_task_fn, "detect", 6 * 1024,
                                 this, 5, &detect_task_, 1) != pdPASS) {
         ESP_LOGE(TAG, "detect task creation failed");
         task_flag_ = 0;
         vTaskDelete(feed_task_);
         xTimerDelete(timeout_timer_, 0);
+        esp_mn_commands_free();
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
         afe_handle_->destroy(afe_data_);
+        afe_data_ = nullptr;
         esp_codec_dev_close(mic_dev_);
         mic_dev_ = nullptr;
         return;
@@ -181,6 +268,15 @@ VoicePipeline::~VoicePipeline()
         timeout_timer_ = nullptr;
     }
 
+    /* Free speech commands list */
+    esp_mn_commands_free();
+
+    /* Destroy MultiNet */
+    if (mn_data_ != nullptr && multinet_ != nullptr) {
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
+    }
+
     /* Destroy AFE */
     if (afe_data_ != nullptr && afe_handle_ != nullptr) {
         afe_handle_->destroy(afe_data_);
@@ -213,6 +309,28 @@ void VoicePipeline::cancel_command_timeout()
         xTimerStop(timeout_timer_, 0);
         ESP_LOGI(TAG, "Command timeout cancelled");
     }
+}
+
+// ---------------------------------------------------------------------------
+//  Private — command mode helpers
+// ---------------------------------------------------------------------------
+
+void VoicePipeline::_enter_command_mode()
+{
+    command_mode_ = true;
+    afe_handle_->disable_wakenet(afe_data_);
+    /* Clean MultiNet state so it's ready for the first command phrase */
+    multinet_->clean(mn_data_);
+    start_command_timeout();
+    ESP_LOGI(TAG, "Command mode: WakeNet disabled, multiword listening");
+}
+
+void VoicePipeline::_exit_command_mode()
+{
+    command_mode_ = false;
+    afe_handle_->enable_wakenet(afe_data_);
+    cancel_command_timeout();
+    ESP_LOGI(TAG, "Command mode: WakeNet re-enabled");
 }
 
 // ---------------------------------------------------------------------------
@@ -269,10 +387,9 @@ void VoicePipeline::feed_task_fn(void *arg)
 void VoicePipeline::detect_task_fn(void *arg)
 {
     auto *self = static_cast<VoicePipeline *>(arg);
-    int16_t *buff = nullptr;
 
     const int fetch_chunk = self->afe_handle_->get_fetch_chunksize(self->afe_data_);
-    buff = static_cast<int16_t *>(heap_caps_malloc(
+    auto *buff = static_cast<int16_t *>(heap_caps_malloc(
         fetch_chunk * sizeof(int16_t), MALLOC_CAP_SPIRAM));
     if (buff == nullptr) {
         ESP_LOGE(TAG, "detect: malloc failed");
@@ -293,22 +410,65 @@ void VoicePipeline::detect_task_fn(void *arg)
 
         /* Periodic audio level debug (every ~100 frames ≈ 3s) */
         if (++log_ticks % 100 == 0) {
-            ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  wake:%d  rbuf:%.0f%%",
+            ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  mode:%s  rbuf:%.0f%%",
                      (double)res->data_volume, res->vad_state,
-                     res->wakeup_state, (double)(res->ringbuff_free_pct * 100.0f));
+                     self->command_mode_ ? "CMD" : "WAKE",
+                     (double)(res->ringbuff_free_pct * 100.0f));
         }
 
-        /* Wake word detected? */
-        if (res->wakeup_state == WAKENET_DETECTED) {
-            ESP_LOGI(TAG, ">>> Wake word detected (model=%d, word=%d) <<<",
-                     res->wakenet_model_index, res->wake_word_index);
+        if (self->command_mode_) {
+            /* ---- COMMAND MODE: feed AFE output to MultiNet ------------ */
+            esp_mn_state_t mn_state = self->multinet_->detect(self->mn_data_,
+                                                              res->data);
 
-            if (self->on_wakeword_) {
-                self->on_wakeword_();
+            if (mn_state == ESP_MN_STATE_DETECTING) {
+                continue;
             }
 
-            /* Start command timeout — if no command within 15 s, fall back */
-            self->start_command_timeout();
+            if (mn_state == ESP_MN_STATE_TIMEOUT) {
+                ESP_LOGD(TAG, "MultiNet VAD timeout (phrase ended)");
+                /* Clean MultiNet state for the next command phrase.
+                 * The 15 s command timeout is still running — we stay in
+                 * command_mode_ so the user can say "cheese" again. */
+                self->multinet_->clean(self->mn_data_);
+                continue;
+            }
+
+            if (mn_state == ESP_MN_STATE_DETECTED) {
+                esp_mn_results_t *mn_result = self->multinet_->get_results(
+                    self->mn_data_);
+                if (mn_result != nullptr && mn_result->num > 0) {
+                    float prob = mn_result->prob[0];
+                    if (prob >= self->command_threshold_) {
+                        ESP_LOGI(TAG, ">>> Command detected: '%s' "
+                                 "(phrase_id=%d prob=%.3f) <<<",
+                                 mn_result->string,
+                                 mn_result->phrase_id[0],
+                                 (double)prob);
+
+                        if (self->on_command_) {
+                            self->on_command_();
+                        }
+                    }
+                }
+                /* Clean MultiNet for the next command phrase.
+                 * The 15 s window stays alive — user can say "cheese"
+                 * multiple times. */
+                self->multinet_->clean(self->mn_data_);
+                continue;
+            }
+        } else {
+            /* ---- WAKE WORD MODE: check WakeNet result ---------------- */
+            if (res->wakeup_state == WAKENET_DETECTED) {
+                ESP_LOGI(TAG, ">>> Wake word detected <<<");
+
+                if (self->on_wakeword_) {
+                    self->on_wakeword_();
+                }
+
+                /* Transition to command mode */
+                self->_enter_command_mode();
+            }
         }
     }
 
@@ -325,7 +485,10 @@ void VoicePipeline::detect_task_fn(void *arg)
 void VoicePipeline::timeout_timer_fn(TimerHandle_t timer)
 {
     auto *self = static_cast<VoicePipeline *>(pvTimerGetTimerID(timer));
-    ESP_LOGI(TAG, ">>> Command timeout (15 s expired) <<<");
+    ESP_LOGI(TAG, ">>> 15-second command window expired <<<");
+
+    /* Exit command mode — re-enable WakeNet, cancel timeout */
+    self->_exit_command_mode();
 
     if (self->on_timeout_) {
         self->on_timeout_();

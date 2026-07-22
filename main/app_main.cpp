@@ -5,6 +5,7 @@
  * REQ-002: BSP Integration and Splash Screen
  * REQ-003: Application State Display
  * REQ-004: WakeNet Wake-Word Detection
+ * REQ-005: MultiNet Command Detection
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
  * initialise all BSP peripherals, show an LVGL splash, then transition to
@@ -205,6 +206,12 @@ extern "C" void app_main(void)
         }
     };
 
+    auto on_command = []() {
+        ESP_LOGI(TAG, ">>> Command 'cheese' detected <<<");
+        /* Remain in STATE_COMMAND — the 15 s window is still active;
+         * user can say "cheese" multiple times. */
+    };
+
     auto on_timeout = []() {
         if (g_state != nullptr) {
             g_state->set_state(STATE_WAKEWORD);
@@ -214,6 +221,7 @@ extern "C" void app_main(void)
     };
 
     g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+                                               std::move(on_command),
                                                std::move(on_timeout));
     if (g_voice == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate VoicePipeline");
