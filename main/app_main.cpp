@@ -4,6 +4,7 @@
  *
  * REQ-002: BSP Integration and Splash Screen
  * REQ-003: Application State Display
+ * REQ-004: WakeNet Wake-Word Detection
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
  * initialise all BSP peripherals, show an LVGL splash, then transition to
@@ -25,6 +26,7 @@ extern "C" {
 #include <new>
 #include "splash.hpp"
 #include "state_display.hpp"
+#include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
 
@@ -186,4 +188,27 @@ extern "C" void app_main(void)
     }
 
     ESP_LOGI(TAG, "Initialisation complete. State: \"%s\"", STATE_WAKEWORD);
+
+    /* ---- Voice pipeline (WakeNet + AFE) ---- */
+    /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
+     * returns — app_main exits but the tasks keep running. */
+    static VoicePipeline *s_voice = nullptr;
+
+    auto on_wakeword = []() {
+        if (g_state != nullptr) {
+            g_state->set_state(STATE_COMMAND);
+        }
+    };
+
+    auto on_timeout = []() {
+        if (g_state != nullptr) {
+            g_state->set_state(STATE_WAKEWORD);
+        }
+    };
+
+    s_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+                                               std::move(on_timeout));
+    if (s_voice == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate VoicePipeline");
+    }
 }
