@@ -5,6 +5,7 @@
  * REQ-002: BSP Integration and Splash Screen
  * REQ-003: Application State Display
  * REQ-004: WakeNet Wake-Word Detection
+ * REQ-005: MultiNet Command Detection
  *
  * Following the reference pattern from esp-bsp/examples/display/main/main.c:
  * initialise all BSP peripherals, show an LVGL splash, then transition to
@@ -24,6 +25,8 @@ extern "C" {
 
 #include "lvgl.h"
 #include <new>
+#include <cstdio>
+#include <cstring>
 #include "splash.hpp"
 #include "state_display.hpp"
 #include "voice_pipeline.hpp"
@@ -197,7 +200,7 @@ extern "C" void app_main(void)
     /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
      * returns — app_main exits but the tasks keep running. */
 
-    auto on_wakeword = []() {
+    auto on_wakeword = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_COMMAND);
         } else {
@@ -205,7 +208,14 @@ extern "C" void app_main(void)
         }
     };
 
-    auto on_timeout = []() {
+    auto on_command = [](const char *cmd) {
+        ESP_LOGI(TAG, ">>> Command detected: '%s' <<<", cmd);
+        if (g_state != nullptr) {
+            g_state->show_cmd(cmd);
+        }
+    };
+
+    auto on_timeout = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_WAKEWORD);
         } else {
@@ -213,7 +223,10 @@ extern "C" void app_main(void)
         }
     };
 
+    /* Create 3-second display revert timer */
+
     g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+                                               std::move(on_command),
                                                std::move(on_timeout));
     if (g_voice == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate VoicePipeline");
