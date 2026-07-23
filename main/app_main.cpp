@@ -34,6 +34,7 @@ extern "C" {
 #include "state_display.hpp"
 #include "camera.hpp"
 #include "detector.hpp"
+#include "result_display.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -280,17 +281,39 @@ extern "C" void app_main(void)
                     g_state->set_state(STATE_ANALYSING);
                 }
 
-                /* Launch async inference in its own PSRAM-backed task */
+                /* Copy frame to persistent buffer for ResultDisplay */
+                size_t fsz = frame.width * frame.height * 2;
+                auto *fdup = static_cast<uint8_t *>(
+                    heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
+                if (fdup == nullptr) {
+                    ESP_LOGE(TAG, "OOM for frame copy");
+                    if (g_state != nullptr) {
+                        g_state->set_state(STATE_WAKEWORD);
+                    }
+                    return;
+                }
+                memcpy(fdup, frame.data, fsz);
+
+                /* Launch async inference */
                 if (g_detector != nullptr) {
                     g_detector->detect_async(
                         frame.data, frame.width, frame.height,
-                        [](const char *result) {
+                        [fdup, w = frame.width, h = frame.height](const char *result) {
                             if (g_state != nullptr) {
-                                g_state->show_temp(result, 5000,
-                                                   STATE_WAKEWORD);
+                                g_state->show_temp(result, 10000, STATE_COMMAND);
                             }
+
+                            /* Show camera image on LCD */
+                            std::list<dl::detect::result_t> empty;
+                            ResultDisplay::show(fdup, w, h, empty, []() {
+                                if (g_voice != nullptr) {
+                                    g_voice->enter_command_mode();
+                                }
+                            });
+                            /* Note: fdup ownership transferred to ResultDisplay */
                         });
                 } else {
+                    heap_caps_free(fdup);
                     if (g_state != nullptr) {
                         g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                     }

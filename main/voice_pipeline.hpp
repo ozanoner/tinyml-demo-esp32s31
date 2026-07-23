@@ -88,6 +88,14 @@ public:
     void exit_command_mode() { command_mode_ = false; }
 
     /**
+     * @brief Enter command mode (re-entering after result display dismiss).
+     */
+    void enter_command_mode() {
+        command_mode_ = true;
+        start_command_timeout();
+    }
+
+    /**
      * @brief Set confidence threshold for command detection.
      *
      * Commands with probability below this threshold are ignored.
