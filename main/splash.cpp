@@ -96,6 +96,9 @@ void Splash::_dismiss(Reason r)
 
 void Splash::_cleanup()
 {
+    /* Remove event callback to prevent dangling-pointer crash on later taps */
+    lv_obj_remove_event_cb(scr_, _on_tap);
+
     if (timer_) {
         lv_timer_del(timer_);
         timer_ = nullptr;

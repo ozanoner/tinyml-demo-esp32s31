@@ -34,6 +34,7 @@ extern "C" {
 #include "state_display.hpp"
 #include "camera.hpp"
 #include "detector.hpp"
+#include "result_display.hpp"
 #include "voice_pipeline.hpp"
 
 static constexpr const char* TAG = "app";
@@ -197,10 +198,6 @@ extern "C" void app_main(void)
                       on_splash_dismissed);
         bsp_display_unlock();
 
-        /* Wait until the splash is dismissed (timer/tap) before continuing.
-         * The Splash object must outlive its own timer.  The dismiss callback
-         * on_splash_dismissed() fires first (under the LVGL task context),
-         * creating g_state before splash labels are deleted — no blank frame. */
         while (splash.is_active()) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
@@ -212,7 +209,6 @@ extern "C" void app_main(void)
     g_camera = new (std::nothrow) Camera();
     if (g_camera != nullptr && !g_camera->is_ok()) {
         ESP_LOGE(TAG, "Camera init failed — frames will not be captured");
-        /* Non-fatal: the app can still run voice commands without camera */
     }
     print_memory_summary("CAMERA");
 
@@ -224,14 +220,9 @@ extern "C" void app_main(void)
     print_memory_summary("DETECTOR");
 
     /* ---- Voice pipeline (WakeNet + AFE) ---- */
-    /* The VoicePipeline owns the feed/detect tasks and AFE.  It never
-     * returns — app_main exits but the tasks keep running. */
-
     auto on_wakeword = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_COMMAND);
-        } else {
-            ESP_LOGE(TAG, "on_wakeword: g_state is null");
         }
     };
 
@@ -239,74 +230,62 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, ">>> Command detected: '%s' <<<", cmd);
         if (g_state == nullptr) return;
 
-        if (strcmp(cmd, "cheese") == 0) {
-            /* Exit command mode so the detect task stops listening */
-            if (g_voice != nullptr) {
-                g_voice->exit_command_mode();
-                g_voice->cancel_command_timeout();
+        if (g_voice != nullptr) {
+            g_voice->exit_command_mode();
+            g_voice->cancel_command_timeout();
+        }
+
+        g_state->show_cmd(cmd);
+
+        g_state->on_countdown_done([]() {
+            if (g_camera == nullptr || !g_camera->is_ok()) {
+                ESP_LOGE(TAG, "Camera not available");
+                if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
+                return;
             }
 
-            /* Start the 3-second countdown */
-            g_state->show_cmd(cmd);
+            camera_frame_t frame;
+            esp_err_t ret = g_camera->capture_frame(frame);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "capture_frame failed: %s", esp_err_to_name(ret));
+                if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
+                return;
+            }
 
-            /* Set capture callback — fires when countdown reaches 0 */
-            g_state->on_countdown_done([]() {
-                /* Capture a frame (runs in timer daemon — keep it quick) */
-                if (g_camera == nullptr || !g_camera->is_ok()) {
-                    ESP_LOGE(TAG, "Camera not available");
-                    if (g_state != nullptr) {
-                        g_state->set_state(STATE_WAKEWORD);
-                    }
-                    return;
-                }
+            ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
+                          "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
+                     frame.width, frame.height,
+                     frame.stride, frame.pixel_format);
 
-                camera_frame_t frame;
-                esp_err_t ret = g_camera->capture_frame(frame);
-                if (ret != ESP_OK) {
-                    ESP_LOGE(TAG, "capture_frame failed: %s",
-                             esp_err_to_name(ret));
-                    if (g_state != nullptr) {
-                        g_state->set_state(STATE_WAKEWORD);
-                    }
-                    return;
-                }
+            if (g_state != nullptr) g_state->set_state(STATE_ANALYSING);
 
-                ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
-                              "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
-                         frame.width, frame.height,
-                         frame.stride, frame.pixel_format);
-
-                if (g_state != nullptr) {
-                    g_state->set_state(STATE_ANALYSING);
-                }
-
-                /* Launch async inference in its own PSRAM-backed task */
-                if (g_detector != nullptr) {
-                    g_detector->detect_async(
-                        frame.data, frame.width, frame.height,
-                        [](const char *result) {
-                            if (g_state != nullptr) {
-                                g_state->show_temp(result, 5000,
-                                                   STATE_WAKEWORD);
+            if (g_detector != nullptr) {
+                g_detector->detect_async(
+                    frame.data, frame.width, frame.height,
+                    [w = frame.width, h = frame.height,
+                     data = frame.data](
+                        const char * /*text*/,
+                        const std::list<dl::detect::result_t> &results) {
+                        /* Frame data still alive — camera owns it, detect
+                         * hasn't freed its copy yet.  ResultDisplay copies
+                         * into its static buffer synchronously. */
+                        ResultDisplay::show(data, w, h, results, []() {
+                            if (g_voice != nullptr) {
+                                g_voice->enter_command_mode();
                             }
                         });
-                } else {
-                    if (g_state != nullptr) {
-                        g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
-                    }
+                    });
+            } else {
+                if (g_state != nullptr) {
+                    g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                 }
-            });
-        } else {
-            /* Non-cheese command: show and revert after 3 s */
-            g_state->show_cmd(cmd);
-        }
+            }
+        });
     };
 
     auto on_timeout = [](const char *) {
         if (g_state != nullptr) {
             g_state->set_state(STATE_WAKEWORD);
-        } else {
-            ESP_LOGE(TAG, "on_timeout: g_state is null");
         }
     };
 
@@ -315,5 +294,11 @@ extern "C" void app_main(void)
                                                std::move(on_timeout));
     if (g_voice == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate VoicePipeline");
+        return;
     }
+
+    print_memory_summary("VOICE");
+
+    /* app_main returns — pipeline runs forever */
+    ESP_LOGI(TAG, "app_main done");
 }
