@@ -191,6 +191,7 @@ void ResultScreen::on_lv_timer(lv_timer_t *t)
     auto *s = static_cast<ResultScreen *>(lv_timer_get_user_data(t));
     if (s == nullptr || s->dismissed_) return;
     s->dismissed_ = true;
+    lv_obj_remove_event_cb(lv_scr_act(), on_click);
     s->dismiss();
 }
 
@@ -200,5 +201,7 @@ void ResultScreen::on_click(lv_event_t *e)
     if (s == nullptr || s->dismissed_) return;
     s->dismissed_ = true;
     if (s->lv_timer_ != nullptr) lv_timer_pause(s->lv_timer_);
+    /* Remove event callback on active screen before deleting self */
+    lv_obj_remove_event_cb(lv_scr_act(), on_click);
     s->dismiss();
 }
