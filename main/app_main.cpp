@@ -298,14 +298,10 @@ extern "C" void app_main(void)
                 if (g_detector != nullptr) {
                     g_detector->detect_async(
                         frame.data, frame.width, frame.height,
-                        [fdup, w = frame.width, h = frame.height](const char *result) {
-                            if (g_state != nullptr) {
-                                g_state->show_temp(result, 10000, STATE_COMMAND);
-                            }
-
-                            /* Show camera image on LCD */
-                            std::list<dl::detect::result_t> empty;
-                            ResultDisplay::show(fdup, w, h, empty, []() {
+                        [fdup, w = frame.width, h = frame.height](const char * /*text*/,
+                           const std::list<dl::detect::result_t> &results) {
+                            /* Show camera image + boxes + labels on LCD */
+                            ResultDisplay::show(fdup, w, h, results, []() {
                                 if (g_voice != nullptr) {
                                     g_voice->enter_command_mode();
                                 }

@@ -210,7 +210,7 @@ void Detector::task_entry(void *arg)
     }
 
     if (ia->cb) {
-        ia->cb(buf);
+        ia->cb(buf, results);
     }
 
     heap_caps_free(ia->data);

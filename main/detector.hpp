@@ -27,8 +27,10 @@ public:
 
     bool is_ok() const { return detect_ != nullptr; }
 
-    /** Callback invoked with result string (e.g. "obj 1 85% / obj 3 42%"). */
-    using result_cb_t = std::function<void(const char *)>;
+    /** Callback receives result string + full detection results. */
+    using result_cb_t = std::function<void(
+        const char *text,
+        const std::list<dl::detect::result_t> &results)>;
 
     /**
      * @brief Run detection on a camera frame (synchronous).
