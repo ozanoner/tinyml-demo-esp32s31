@@ -13,6 +13,11 @@
 
 static constexpr const char *TAG = "result";
 
+/* Single reusable PSRAM buffer for the raw frame — allocated once, avoids
+ * heap fragmentation from per-capture alloc/free cycles. */
+static uint8_t *s_raw_buf   = nullptr;
+static size_t   s_raw_bytes = 0;
+
 class ResultScreen {
 public:
     ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
@@ -44,12 +49,25 @@ void ResultDisplay::show(const uint8_t *frame,
                          const std::list<dl::detect::result_t> &results,
                          on_dismiss_cb_t on_dismiss)
 {
+    /* Allocate static buffer on first use (one-shot, no fragmentation) */
+    size_t fsz = (size_t)width * height * 2;
+    if (s_raw_buf == nullptr) {
+        s_raw_buf = static_cast<uint8_t *>(
+            heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
+        s_raw_bytes = fsz;
+        if (s_raw_buf == nullptr) {
+            ESP_LOGE(TAG, "OOM for static raw buffer");
+            return;
+        }
+    }
+    memcpy(s_raw_buf, frame, fsz);  /* synchronous copy while data is alive */
+
     struct ctx_t {
         uint8_t    *f; uint32_t w, h;
         std::list<dl::detect::result_t> results;
         on_dismiss_cb_t cb;
     };
-    auto *ctx = new ctx_t{const_cast<uint8_t *>(frame), width, height,
+    auto *ctx = new ctx_t{s_raw_buf, width, height,
                           results, std::move(on_dismiss)};
     lv_async_call([](void *arg) {
         auto *c = static_cast<ctx_t *>(arg);
@@ -75,7 +93,6 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
         heap_caps_malloc(npix * 2, MALLOC_CAP_SPIRAM));
     if (swapped_ == nullptr) {
         ESP_LOGE(TAG, "OOM for frame buffer");
-        heap_caps_free(const_cast<uint8_t *>(frame));
         return;
     }
     for (uint32_t y = 0; y < h; y++) {
@@ -86,7 +103,7 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
             dr[x * 2 + 1] = sr[x * 2];
         }
     }
-    heap_caps_free(const_cast<uint8_t *>(frame));
+    /* frame is the static s_raw_buf — do not free it */
 
     /* Image descriptor */
     memset(&img_dsc_, 0, sizeof(img_dsc_));

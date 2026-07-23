@@ -259,31 +259,23 @@ extern "C" void app_main(void)
 
             if (g_state != nullptr) g_state->set_state(STATE_ANALYSING);
 
-            /* Copy frame for ResultDisplay (survives detector's internal copy) */
-            size_t fsz = frame.width * frame.height * 2;
-            auto *fdup = static_cast<uint8_t *>(
-                heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
-            if (fdup == nullptr) {
-                ESP_LOGE(TAG, "OOM for frame copy");
-                if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
-                return;
-            }
-            memcpy(fdup, frame.data, fsz);
-
             if (g_detector != nullptr) {
                 g_detector->detect_async(
                     frame.data, frame.width, frame.height,
-                    [fdup, w = frame.width, h = frame.height](
+                    [w = frame.width, h = frame.height,
+                     data = frame.data](
                         const char * /*text*/,
                         const std::list<dl::detect::result_t> &results) {
-                        ResultDisplay::show(fdup, w, h, results, []() {
+                        /* Frame data still alive — camera owns it, detect
+                         * hasn't freed its copy yet.  ResultDisplay copies
+                         * into its static buffer synchronously. */
+                        ResultDisplay::show(data, w, h, results, []() {
                             if (g_voice != nullptr) {
                                 g_voice->enter_command_mode();
                             }
                         });
                     });
             } else {
-                heap_caps_free(fdup);
                 if (g_state != nullptr) {
                     g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);
                 }
