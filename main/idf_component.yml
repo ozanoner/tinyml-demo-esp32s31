@@ -1,8 +1,9 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  ## Required IDF version
+  ## Required IDF version — pinned to the version this project is verified
+  ## against (espressif/idf:release-v6.1 in .devcontainer/Dockerfile).
   idf:
-    version: '>=4.1.0'
+    version: "6.1.0"
   # # Put list of dependencies here
   # # For components maintained by Espressif:
   # component: "~1.0.0"
@@ -14,7 +15,38 @@ dependencies:
   #   # `public` flag doesn't have an effect dependencies of the `main` component.
   #   # All dependencies of `main` are public by default.
   #   public: true
-  # The BSP is owned by the selected devkit: see devkits/<devkit>/idf_component.yml.
-  espressif/esp-sr: ^2.4.6
-  espressif/esp-dl: '>=3.3.8'
-  espressif/coco_detect: '^0.4.0'
+  #
+  # Versions are pinned exactly, not ranged. An unpinned graph re-solves to
+  # whatever the registry considers newest-compatible on that day, so two builds
+  # of the same commit can link different libraries (issue #25). Every registry
+  # component in the graph is listed here — the ones we declare, and the ones we
+  # only reach transitively — so a clean clone resolves exactly the version set
+  # that was built and tested.
+  #
+  # The BSP itself is owned by the selected devkit: see devkits/<devkit>/idf_component.yml.
+  espressif/esp-sr: "2.6.0"
+  espressif/esp-dl: "3.3.13"
+  espressif/coco_detect: "0.4.1"
+  # Reached through the BSP's esp_lvgl_port, which declares lvgl '>=8,<10' — too
+  # loose to hold the graphics library still on its own. main/ includes lvgl.h directly.
+  lvgl/lvgl: "9.6.0~1"
+  #
+  # Transitive dependencies, listed to fix the whole graph. Each one is still
+  # required by its declaring component at the range noted — these entries only
+  # stop it being re-solved to a newer version on the next clean build.
+  espressif/button: "4.2.1"                 # BSP, ^4
+  espressif/cjson: "1.7.19~2"               # esp-sr, ^1.7.19
+  espressif/cmake_utilities: "0.5.3"        # BSP / esp_video / led_indicator, 0.* / '*'
+  espressif/dl_fft: "0.8.0"                 # esp-dl, >=0.8.0
+  espressif/esp_cam_sensor: "2.2.0"         # esp_video, 2.2.*
+  espressif/esp_codec_dev: "1.5.11"         # BSP, ~1.5
+  espressif/esp_lcd_touch: "1.2.1"          # esp_lcd_touch_gt1151, ^1.2.0
+  espressif/esp_lcd_touch_gt1151: "1.1.1"   # BSP, '*'
+  espressif/esp_lvgl_port: "2.9.0"          # BSP, ^2
+  espressif/esp_new_jpeg: "1.0.2"           # esp-dl, ^1
+  espressif/esp_sccb_intf: "0.0.9"          # esp_cam_sensor, >=0.0.5
+  espressif/esp_video: "2.2.0"              # BSP, ~2.2
+  espressif/led_indicator: "2.1.2"          # BSP, ^2
+  espressif/led_strip: "3.1.0~1"            # led_indicator, 3.*
+  espressif/usb: "1.6.0"                    # usb_host_uvc, ^1.0.0
+  espressif/usb_host_uvc: "2.5.2"           # esp_video, 2.5.*
