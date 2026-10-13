@@ -41,6 +41,10 @@ bool lcd_draw_buf_double();
 const char *camera_device();
 /** Bytes in one RGB565 frame at the devkit's configured sensor resolution. */
 uint32_t camera_frame_bytes();
+/** Width of one captured frame, in pixels, at that same resolution. */
+uint32_t camera_frame_width();
+/** Height of one captured frame, in pixels, at that same resolution. */
+uint32_t camera_frame_height();
 /** Whether captured frames must be flipped vertically before display. */
 bool frame_vertical_flip();
 /** Whether RGB565 frames arrive big-endian and must be byte-swapped. */

@@ -32,7 +32,9 @@ public:
     /**
      * @brief Construct and pre-allocate the frame buffer in PSRAM.
      *
-     * The buffer is allocated once (640×480×2 bytes) and reused for every
+     * The buffer holds one frame per USERPTR slot (BUFFER_COUNT frames), each
+     * sized from the devkit abstraction.  On Korvo-1 that is 3 × 240×240
+     * RGB565 = 345,600 bytes.  It is allocated once and reused for every
      * capture.  Check is_ok() before calling capture_frame().
      */
     Camera();
