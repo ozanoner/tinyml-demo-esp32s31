@@ -55,6 +55,27 @@ static Camera *g_camera = nullptr;
 /* COCO object detector — created after camera, runs inference on frames. */
 static Detector *g_detector = nullptr;
 
+/* ---------------------------------------------------------------------------
+ *  Return to command mode — callable from any task
+ *
+ * The detector completion callback runs in the inference task and LVGL is not
+ * thread-safe, so the label write is marshalled onto the LVGL task with
+ * lv_async_call().  Entering command mode is a flag plus a timer reset (safe
+ * from any context) and is kept in the same callback so that what the screen
+ * says and what the pipeline listens for change together.
+ * ------------------------------------------------------------------------- */
+static void return_to_command_mode()
+{
+    lv_async_call([](void *) {
+        if (g_state != nullptr) {
+            g_state->set_state(STATE_COMMAND);
+        }
+        if (g_voice != nullptr) {
+            g_voice->enter_command_mode();
+        }
+    }, nullptr);
+}
+
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
     g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
@@ -261,12 +282,16 @@ extern "C" void app_main(void)
             if (g_state != nullptr) g_state->set_state(STATE_ANALYSING);
 
             if (g_detector != nullptr) {
-                g_detector->detect_async(
+                const bool started = g_detector->detect_async(
                     frame.data, frame.width, frame.height,
                     [w = frame.width, h = frame.height,
                      data = frame.data](
                         const char * /*text*/,
                         const std::list<dl::detect::result_t> &results) {
+                        /* Analysis finished — leave "Analysing image..." and
+                         * return to command mode while the result is on screen. */
+                        return_to_command_mode();
+
                         /* Frame data still alive — camera owns it, detect
                          * hasn't freed its copy yet.  ResultDisplay copies
                          * into its static buffer synchronously. */
@@ -276,6 +301,10 @@ extern "C" void app_main(void)
                             }
                         });
                     });
+                if (!started) {
+                    ESP_LOGE(TAG, "detect_async did not start — no result screen");
+                    return_to_command_mode();
+                }
             } else {
                 if (g_state != nullptr) {
                     g_state->show_temp(STATE_PHOTO, 2000, STATE_WAKEWORD);

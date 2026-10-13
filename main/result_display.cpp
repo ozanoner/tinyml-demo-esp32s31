@@ -130,6 +130,7 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
     /* Layout */
     constexpr int32_t IMG_X = 280, IMG_Y = 120;
     constexpr int32_t LABEL_X = 540, LABEL_W = 240;
+    constexpr int32_t HINT_Y = 375;   /* below the image (IMG_Y + 240 = 360) */
 
     lv_obj_t *parent = lv_scr_act();
 
@@ -189,6 +190,16 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
         lv_obj_set_style_text_color(msg, lv_color_white(), 0);
         widgets_.push_back(msg);
     }
+
+    /* Dismiss hint, centred under the camera image.  The image column is
+     * centred on the panel (280 + 240/2 = 400 = panel mid), so TOP_MID with no
+     * x offset centres the hint on the image.  No explicit font — inherits the
+     * theme like the other overlay labels. */
+    auto *hint = lv_label_create(parent);
+    lv_label_set_text(hint, "Tap to close");
+    lv_obj_set_style_text_color(hint, lv_color_white(), 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, HINT_Y);
+    widgets_.push_back(hint);
 
     /* Tap to dismiss */
     lv_obj_add_event_cb(parent, on_click, LV_EVENT_CLICKED, this);
