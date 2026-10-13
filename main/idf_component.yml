@@ -24,9 +24,18 @@ dependencies:
   # that was built and tested.
   #
   # The BSP itself is owned by the selected devkit: see devkits/<devkit>/idf_component.yml.
-  espressif/esp-sr: "2.6.0"
-  espressif/esp-dl: "3.3.13"
-  espressif/coco_detect: "0.4.1"
+  #
+  # These three are held at the versions this app was built and tested against
+  # (issue #27). esp-dl 3.3.13 strips ops at compile time to whatever the
+  # registered req files name — only esp-sr registers one (speech ops), so the
+  # coco_detect model's Swish op was compiled out, Model::load() failed and
+  # Detector init panicked on every boot. coco_detect 0.4.1 declares esp-dl
+  # ~3.3.13 and esp-sr 2.6.0 declares esp-dl ~3.3.12, so esp-dl cannot be
+  # reverted on its own: the three move together. coco_detect 0.4.0/0.4.1 ship
+  # identical sources and an identical p4 model — only the esp-dl range differs.
+  espressif/esp-sr: "2.4.7"
+  espressif/esp-dl: "3.3.8"
+  espressif/coco_detect: "0.4.0"
   # Reached through the BSP's esp_lvgl_port, which declares lvgl '>=8,<10' — too
   # loose to hold the graphics library still on its own. main/ includes lvgl.h directly.
   lvgl/lvgl: "9.6.0~1"
@@ -37,7 +46,8 @@ dependencies:
   espressif/button: "4.2.1"                 # BSP, ^4
   espressif/cjson: "1.7.19~2"               # esp-sr, ^1.7.19
   espressif/cmake_utilities: "0.5.3"        # BSP / esp_video / led_indicator, 0.* / '*'
-  espressif/dl_fft: "0.8.0"                 # esp-dl, >=0.8.0
+  espressif/dl_fft: "0.8.0"                 # esp-dl 3.3.8 / esp-sr 2.4.7, >=0.6.0
+  espressif/esp-dsp: "1.8.0"                # esp-sr 2.4.7, exact — re-enters the graph with it
   espressif/esp_cam_sensor: "2.2.0"         # esp_video, 2.2.*
   espressif/esp_codec_dev: "1.5.11"         # BSP, ~1.5
   espressif/esp_lcd_touch: "1.2.1"          # esp_lcd_touch_gt1151, ^1.2.0
