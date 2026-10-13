@@ -5,8 +5,12 @@
 ## the BSP may be declared unconditionally here: a build that selects a
 ## different devkit never reads this file and never downloads this BSP.
 dependencies:
+  # Exact version, not '*': this BSP is the root of the devkit's whole dependency
+  # subtree (it pulls esp_lvgl_port, esp_video, esp_codec_dev, …), so an unpinned
+  # BSP re-solves that subtree on every clean build (issue #25).
+  #
   # `public: true` so the application (main) can resolve "bsp/esp-bsp.h"
   # transitively through this component.
   espressif/esp32_s31_korvo_1:
-    version: '*'
+    version: "1.0.1"
     public: true
