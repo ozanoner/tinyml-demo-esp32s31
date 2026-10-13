@@ -14,7 +14,7 @@ dependencies:
   #   # `public` flag doesn't have an effect dependencies of the `main` component.
   #   # All dependencies of `main` are public by default.
   #   public: true
-  espressif/esp32_s31_korvo_1: '*'
+  # The BSP is owned by the selected devkit: see devkits/<devkit>/idf_component.yml.
   espressif/esp-sr: ^2.4.6
   espressif/esp-dl: '>=3.3.8'
   espressif/coco_detect: '^0.4.0'

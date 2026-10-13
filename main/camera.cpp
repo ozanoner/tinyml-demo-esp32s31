@@ -23,15 +23,12 @@
 #include <sys/poll.h>
 #include <linux/videodev2.h>
 
-/* BSP device name macro */
-#include "bsp/esp32_s31_korvo_1.h"
+#include "devkit.hpp"
 #include "esp_video_device.h"
 
 static constexpr const char *TAG = "camera";
 
 static constexpr int BUFFER_COUNT = 3;
-/** Size for one RGB565 frame at 240×240 (2 bytes per pixel). */
-static constexpr uint32_t FRAME_BYTES = 240 * 240 * 2;
 
 /* ---------------------------------------------------------------------------
  *  Helpers
@@ -54,8 +51,9 @@ Camera::Camera()
     : fb_(nullptr), fb_size_(0)
 {
     /* Pre-allocate frame buffers in PSRAM — one full frame per USERPTR slot.
-     * 240 * 240 * 2 * BUFFER_COUNT = 115,200 * 3 = 345,600 bytes. */
-    constexpr uint32_t BUF_SIZE = FRAME_BYTES * BUFFER_COUNT;
+     * Frame geometry comes from the selected devkit. */
+    const uint32_t frame_bytes = devkit::camera_frame_bytes();
+    const uint32_t BUF_SIZE = frame_bytes * BUFFER_COUNT;
 
     fb_ = static_cast<uint8_t *>(
         heap_caps_aligned_alloc(64, BUF_SIZE,
@@ -91,7 +89,7 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
     }
 
     /* ---- 1. Open the DVP device ---------------------------------------- */
-    const char *dev_path = BSP_CAMERA_DEVICE;   /* "/dev/video2" */
+    const char *dev_path = devkit::camera_device();
     int fd = ::open(dev_path, O_RDONLY);
     if (fd < 0) {
         ESP_LOGE(TAG, "open(%s) failed: %s", dev_path, strerror(errno));
@@ -164,6 +162,7 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
     }
 
     /* ---- 4. Queue USERPTR buffers — one full frame per slot ------------- */
+    const uint32_t frame_bytes = devkit::camera_frame_bytes();
     {
         for (int i = 0; i < BUFFER_COUNT; i++) {
             struct v4l2_buffer buf;
@@ -171,8 +170,8 @@ esp_err_t Camera::capture_frame(camera_frame_t &frame)
             buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             buf.memory      = V4L2_MEMORY_USERPTR;
             buf.index       = i;
-            buf.m.userptr   = reinterpret_cast<unsigned long>(fb_ + i * FRAME_BYTES);
-            buf.length      = FRAME_BYTES;
+            buf.m.userptr   = reinterpret_cast<unsigned long>(fb_ + i * frame_bytes);
+            buf.length      = frame_bytes;
 
             if (xioctl(fd, VIDIOC_QBUF, &buf) != 0) {
                 ESP_LOGE(TAG, "VIDIOC_QBUF[%d] failed: %s", i, strerror(errno));

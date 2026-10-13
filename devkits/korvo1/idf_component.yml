@@ -1,0 +1,12 @@
+## IDF Component Manager Manifest File
+##
+## Devkit-owned dependencies. This manifest is read ONLY when this devkit is the
+## selected one (its directory is the single entry in EXTRA_COMPONENT_DIRS), so
+## the BSP may be declared unconditionally here: a build that selects a
+## different devkit never reads this file and never downloads this BSP.
+dependencies:
+  # `public: true` so the application (main) can resolve "bsp/esp-bsp.h"
+  # transitively through this component.
+  espressif/esp32_s31_korvo_1:
+    version: '*'
+    public: true

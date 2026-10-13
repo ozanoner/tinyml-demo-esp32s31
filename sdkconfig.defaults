@@ -1,26 +1,12 @@
-# Custom partition table
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
-
-# Flash size — Korvo-1 has 16 MB
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+# Shared, devkit-independent settings.
+#
+# Devkit-specific settings live in devkits/<devkit>/sdkconfig.defaults and are
+# applied after this file (the later file wins) — see the top-level
+# CMakeLists.txt. Selecting a devkit is what brings in flash size, PSRAM,
+# the camera sensor and the partition table.
 
 # LVGL — enable Montserrat 28 font for splash/state display
 CONFIG_LV_FONT_MONTSERRAT_28=y
-
-# PSRAM — Korvo-1 has 16 MB Octal PSRAM; required for RGB display buffers
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
-CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
-
-# Camera sensor — OV3660 on DVP interface
-CONFIG_CAMERA_OV3660=y
-# Enable RGB565 at 240×240 (square, 115 KB frames — good for YOLO input)
-CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y
-CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y
 
 # ESP-SR configuration
 # WakeNet9 "Hi,ESP"

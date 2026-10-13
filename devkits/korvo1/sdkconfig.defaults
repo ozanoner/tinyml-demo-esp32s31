@@ -1,0 +1,28 @@
+# ESP32-S31 Korvo-1 — devkit-specific settings.
+#
+# Applied after the project-root sdkconfig.defaults (later file wins). Wired in
+# the top-level CMakeLists.txt through SDKCONFIG_DEFAULTS, which names this file
+# explicitly — IDF does not auto-load a defaults file with this name.
+
+# Selected devkit — must match the DEVKIT environment variable used to build.
+CONFIG_DEVKIT_KORVO1=y
+
+# Custom partition table — this devkit's own layout.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="devkits/korvo1/partitions.csv"
+
+# Flash size — Korvo-1 has 16 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# PSRAM — 16 MB Octal PSRAM; required for RGB display buffers.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+
+# Camera sensor — OV3660 on the DVP interface.
+CONFIG_CAMERA_OV3660=y
+# Enable RGB565 at 240x240 (square, 115 KB frames — good for YOLO input).
+CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y
+CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y
