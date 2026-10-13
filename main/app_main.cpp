@@ -23,7 +23,7 @@ extern "C" {
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
-#include "bsp/esp32_s31_korvo_1.h"
+#include "bsp/esp-bsp.h"
 }
 
 #include "lvgl.h"
@@ -36,6 +36,7 @@ extern "C" {
 #include "detector.hpp"
 #include "result_display.hpp"
 #include "voice_pipeline.hpp"
+#include "devkit.hpp"
 
 static constexpr const char* TAG = "app";
 
@@ -118,8 +119,8 @@ static esp_err_t init_bsp_display(void)
 
     const bsp_display_cfg_t disp_cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
-        .double_buffer = CONFIG_BSP_LCD_DRAW_BUF_DOUBLE,
+        .buffer_size = devkit::lcd_h_res() * devkit::lcd_draw_buf_height(),
+        .double_buffer = devkit::lcd_draw_buf_double(),
         .flags = {
             .buff_dma = false,
             .buff_spiram = true,
@@ -164,7 +165,7 @@ extern "C" void app_main(void)
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, "  TinyML Demo \u2014 ESP32-S31 Korvo-1");
+    ESP_LOGI(TAG, "  TinyML Demo \u2014 %s", devkit::name());
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, "Chip:         ESP32-S31");
     ESP_LOGI(TAG, "Cores:        %d", chip_info.cores);

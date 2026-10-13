@@ -7,9 +7,12 @@
  */
 
 #include "result_display.hpp"
+#include "devkit.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
+
+#include <cstring>
 
 static constexpr const char *TAG = "result";
 
@@ -86,7 +89,12 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
     : img_(nullptr), lv_timer_(nullptr), swapped_(nullptr),
       dismissed_(false), cb_(std::move(cb))
 {
-    /* Byte-swap RGB565 BE → LE + vertical flip */
+    /* Present the frame the way this devkit's camera delivers it: optional
+     * vertical flip and optional RGB565 BE -> LE byte swap. For a devkit that
+     * needs both, this produces byte-identical output to the previous code. */
+    const bool vflip = devkit::frame_vertical_flip();
+    const bool bswap = devkit::frame_byte_swap();
+
     size_t npix = (size_t)w * h;
     size_t rb   = (size_t)w * 2;
     swapped_ = static_cast<uint8_t *>(
@@ -96,11 +104,15 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
         return;
     }
     for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *sr = frame + (h - 1 - y) * rb;
+        const uint8_t *sr = frame + (vflip ? (h - 1 - y) : y) * rb;
         uint8_t       *dr = swapped_ + y * rb;
-        for (uint32_t x = 0; x < w; x++) {
-            dr[x * 2]     = sr[x * 2 + 1];
-            dr[x * 2 + 1] = sr[x * 2];
+        if (bswap) {
+            for (uint32_t x = 0; x < w; x++) {
+                dr[x * 2]     = sr[x * 2 + 1];
+                dr[x * 2 + 1] = sr[x * 2];
+            }
+        } else {
+            memcpy(dr, sr, rb);
         }
     }
     /* frame is the static s_raw_buf — do not free it */

@@ -6,7 +6,8 @@
 #include "voice_pipeline.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "bsp/esp32_s31_korvo_1.h"
+#include "bsp/esp-bsp.h"
+#include "devkit.hpp"
 
 static constexpr const char *TAG = "voice";
 
@@ -43,8 +44,8 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
 
     esp_codec_dev_sample_info_t mic_fs = {};
     mic_fs.bits_per_sample = 16;
-    mic_fs.channel         = 2;
-    mic_fs.sample_rate     = 16000;
+    mic_fs.channel         = devkit::mic_channels();
+    mic_fs.sample_rate     = devkit::mic_sample_rate();
     esp_err_t ret = esp_codec_dev_open(mic_dev_, &mic_fs);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_codec_dev_open (mic) failed: %s", esp_err_to_name(ret));
@@ -54,7 +55,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     }
 
     /* Set microphone input gain */
-    ret = esp_codec_dev_set_in_gain(mic_dev_, 36.0f);
+    ret = esp_codec_dev_set_in_gain(mic_dev_, devkit::mic_input_gain_db());
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "esp_codec_dev_set_in_gain: %s", esp_err_to_name(ret));
     }
@@ -84,7 +85,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     }
 
     /* Boost AFE output gain for MultiNet */
-    afe_config->afe_linear_gain = 10.0f;
+    afe_config->afe_linear_gain = devkit::afe_linear_gain();
 
     if (afe_config->wakenet_model_name != nullptr) {
         ESP_LOGI(TAG, "WakeNet model: %s", afe_config->wakenet_model_name);
