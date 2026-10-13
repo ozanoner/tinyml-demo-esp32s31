@@ -37,6 +37,8 @@ constexpr uint32_t FRAME_BPP = 2;
 }  // namespace
 
 uint32_t camera_frame_bytes() { return FRAME_W * FRAME_H * FRAME_BPP; }
+uint32_t camera_frame_width() { return FRAME_W; }
+uint32_t camera_frame_height() { return FRAME_H; }
 
 /* The OV3660 sits upside-down relative to the display on this devkit, and the
  * DVP path delivers RGB565 big-endian. Both are corrected when the frame is

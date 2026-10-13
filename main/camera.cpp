@@ -64,8 +64,11 @@ Camera::Camera()
     }
 
     fb_size_ = BUF_SIZE;
-    ESP_LOGI(TAG, "Frame buffer: %" PRIu32 " bytes (%" PRIu32 "x%" PRIu32 " RGB565)",
-             fb_size_, 640U, 480U);
+    ESP_LOGI(TAG, "Frame buffer: %" PRIu32 " bytes, %d x %" PRIu32 "x%" PRIu32
+                  " RGB565 (%" PRIu32 " bytes/frame)",
+             fb_size_, BUFFER_COUNT,
+             devkit::camera_frame_width(), devkit::camera_frame_height(),
+             frame_bytes);
 }
 
 Camera::~Camera()
