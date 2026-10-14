@@ -37,8 +37,11 @@ dependencies:
   espressif/coco_detect: "0.4.0"
   #
   # main/ includes lvgl.h directly (app_main.cpp, splash.hpp, state_display.hpp,
-  # result_display.cpp). LVGL is reached through the BSP's esp_lvgl_port, which
-  # declares it '>=8,<10' — too loose to hold the library still on its own, so
-  # the tested revision is named here. Exact, not a range: '9.6.0~1' is version
-  # 9.6.0 revision 1 ('~N' is the revision field, a bare version means '==').
-  lvgl/lvgl: "9.6.0~1"
+  # result_display.cpp), so the version is named here instead of being left to
+  # the BSP's ranges. One project resolves ONE lvgl, and both devkits constrain
+  # it: esp_lvgl_port declares '>=8,<10', while the ESP-Mosaico BSP (issue #35)
+  # declares '^9.5.0,<9.6.0' for its esp_lvgl_adapter path. The pin therefore
+  # has to sit in the intersection, and 9.5.0 is the only version the registry
+  # publishes there — 9.6.0 and 9.6.0~1 are above the range, and no other 9.5.x
+  # exists. Exact, not a range ('~N' is the revision field).
+  lvgl/lvgl: "9.5.0"
