@@ -23,5 +23,5 @@ endif()
 idf_component_register(SRCS "board_korvo1.cpp"
                             "display_korvo1.cpp"
                             "audio_korvo1.cpp"
-                            "devkit_korvo1.cpp"
+                            "camera_korvo1.cpp"
                        REQUIRES devkit_api)
