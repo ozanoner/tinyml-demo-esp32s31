@@ -15,7 +15,7 @@ Build an embedded TinyML application for the **ESP32-S31-Korvo-1 devkit** that:
 1. **Voice wake-up** — Uses **WakeNet** (ESP-SR) for always-on wake word detection.
 2. **Command detection** — On wake word match, uses **MultiNet** (ESP-SR) to detect the "cheese" command.
 3. **Photo capture** — On "cheese" detected, captures an image from the onboard camera.
-4. **Object detection** — Runs on-device object detection inference on the captured image using **YOLO26n** (via ESP-DL).
+4. **Object detection** — Runs on-device object detection inference on the captured image using **YOLO11n** (320×320 int8, via the **coco_detect** component on ESP-DL).
 5. **Result display** — Shows the captured image and detection results (bounding boxes, labels, confidence scores) on the devkit's LCD screen.
 
 The application demonstrates a complete voice-triggered vision pipeline running fully on-device, with no cloud dependency.
@@ -36,7 +36,7 @@ The application demonstrates a complete voice-triggered vision pipeline running 
 | MultiNet | ESP-SR speech command recognition model |
 | AFE | ESP-SR Audio Front-End (AEC, VAD, noise suppression) |
 | ESP-DL | Espressif's deep-learning inference framework |
-| YOLO26n | Ultralytics-based object detection model, ported for ESP-DL |
+| YOLO11n | Object detection model shipped by the demo — 320×320 int8, via `espressif/coco_detect` on ESP-DL |
 | BSP | Board Support Package — handles all low-level hardware init |
 | Korvo-1 | ESP32-S31 devkit with camera, LCD, mic, speaker, and audio codec |
 | DevContainer | Docker-based development environment (VSCode Dev Containers) |
@@ -138,13 +138,13 @@ On the "cheese" command detected by MultiNet, capture a still image from the onb
 
 ---
 
-### REQ-007: YOLO26n Object Detection via ESP-DL
+### REQ-007: YOLO11n Object Detection via ESP-DL
 
-Run object detection on the captured camera frame using **YOLO26n** via **ESP-DL** (v3.3.8+, supports `esp32s31` target). The image is already in PSRAM from REQ-006 — pass it to the inference pipeline.
+Run object detection on the captured camera frame using **YOLO11n** (320×320, int8) through the **coco_detect** component on **ESP-DL** (v3.3.8+, supports `esp32s31` target). The image is already in PSRAM from REQ-006 — pass it to the inference pipeline.
 
 **Acceptance Criteria:**
 - [ ] ESP-DL component added (`espressif/esp-dl` ≥ v3.3.8)
-- [ ] YOLO26n model loaded (pre-quantized `.espdl` or custom-trained)
+- [ ] YOLO11n model loaded (pre-quantized `.espdl`, via `espressif/coco_detect` 0.4.0)
 - [ ] Model input tensor populated from camera frame buffer
 - [ ] Inference runs on-device (no cloud)
 - [ ] Detection results: bounding boxes, class labels, confidence scores
