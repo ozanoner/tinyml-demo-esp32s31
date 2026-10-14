@@ -1,0 +1,57 @@
+# ESP-Mosaico — devkit-specific settings.
+#
+# Applied after the project-root sdkconfig.defaults (later file wins). Wired in
+# the top-level CMakeLists.txt through SDKCONFIG_DEFAULTS, which names this file
+# explicitly — IDF does not auto-load a defaults file with this name.
+#
+# Values below come from the BSP repository's own examples at the pinned commit
+# (examples/ai_model_gallery, examples/camera_lcd_preview,
+# examples/voice_wake_cmd), not from the board's documentation.
+
+# Selected devkit — must match the DEVKIT environment variable used to build.
+CONFIG_DEVKIT_MOSAICO=y
+
+# Custom partition table — this devkit's own layout.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="devkits/mosaico/partitions.csv"
+
+# Flash size — Mosaico carries 16 MB, like every BSP example.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# PSRAM — 16 MB Octal PSRAM at 250 MHz. Required for the LVGL draw buffers, the
+# detector's frame copies and the camera pipeline.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_250M=y
+CONFIG_SPIRAM_MEMTEST=n
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
+
+# Console over UART. The camera module drives D2 on GPIO33, which is shared with
+# the USB Serial/JTAG D- pad, so the USB console cannot be used while the camera
+# is in the build. (examples/camera_lcd_preview/sdkconfig.defaults:6-14)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+# CONFIG_USJ_ENABLE_USB_SERIAL_JTAG is not set
+
+# BSP display + its LVGL adapter. The BSP's LVGL layer is esp_lvgl_adapter, which
+# bsp_display_start_with_config() initialises
+# (components/esp-mosaico-bsp/onboard/display.c:382-391).
+CONFIG_BSP_DISPLAY_ENABLE=y
+CONFIG_BSP_DISPLAY_LVGL_ENABLE=y
+
+# Audio codec — the board's codec is an ES8311
+# (components/esp-mosaico-bsp/onboard/audio.c:104, `es8311_codec_new`).
+CONFIG_CODEC_ES8311_SUPPORT=y
+
+# Camera module — discovers and claims the left slot, registers /dev/video2.
+# The module's own Kconfig selects the sensors and their modes.
+CONFIG_MOSAICO_MODULE_CAMERA=y
+# Default capture mode: the smallest UYVY mode the selected sensor offers, as the
+# BSP's own LCD-preview example uses
+# (examples/camera_lcd_preview/sdkconfig.defaults:22-25).
+CONFIG_CAMERA_OV3640_DVP_YUV422_UYVY_1024X768_25FPS=y
+CONFIG_CAMERA_OV3640_DVP_DEFAULT_FMT_YUV422_UYVY_1024X768_25FPS=y

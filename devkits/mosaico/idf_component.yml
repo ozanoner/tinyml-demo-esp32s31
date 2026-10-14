@@ -1,0 +1,40 @@
+## IDF Component Manager Manifest File
+##
+## Devkit-owned dependencies. This manifest is read ONLY when this devkit is the
+## selected one (its directory is the single entry in EXTRA_COMPONENT_DIRS), so
+## the dependencies below may be declared unconditionally: a build that selects a
+## different devkit never reads this file and never fetches this BSP.
+##
+## The ESP-Mosaico BSP is not published on the component registry, so it is
+## consumed as a pinned Git dependency. The repository is a MONOREPO:
+##
+##   components/esp-mosaico-bsp        the board support package
+##   components/mosaico_module_camera  the hot-pluggable left-slot camera module
+##   components/mosaico_module_mgr     module discovery/lifecycle manager
+##
+## so each dependency names its subdirectory with `path:` and pins the same
+## commit. Both fields are the documented Git-dependency form — see the ESP-IDF
+## component manager manifest reference, "Git dependencies":
+## https://docs.espressif.com/projects/idf-component-manager/en/latest/reference/manifest_file.html
+##
+## Dependencies declared inside those manifests with `path:`/`override_path:` and
+## no `git:` (mosaico_module_mgr, and the BSP as seen from the camera module) are
+## resolved against the Git repository the parent came from and pinned to the
+## same commit by the component manager — the same reference, "Local paths in
+## manifests loaded from Git".
+dependencies:
+  # Pinned to the commit this devkit was read and written against.
+  # `public: true` so the BSP's own public dependencies (esp_codec_dev, the LVGL
+  # adapter, …) reach the devkit component that includes the BSP headers.
+  esp-mosaico-bsp:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    path: components/esp-mosaico-bsp
+    version: c32332e9483edd10f0351ab0265f8b2ddb5992b1
+    public: true
+
+  # The camera is not part of the BSP: it is a separate component in the same
+  # repository. It claims the left slot and registers /dev/video2.
+  mosaico_module_camera:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    path: components/mosaico_module_camera
+    version: c32332e9483edd10f0351ab0265f8b2ddb5992b1
