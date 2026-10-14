@@ -1,30 +1,26 @@
 /**
  * @file devkit_korvo1.cpp
- * @brief ESP32-S31 Korvo-1 implementation of the devkit abstraction.
+ * @brief ESP32-S31 Korvo-1 — camera values.
  *
- * This is the only file in the project that includes a board-specific BSP
- * header. It is compiled only when korvo1 is the selected devkit
- * (see this devkit's CMakeLists.txt guard).
+ * Board identity lives in board_korvo1.cpp, the display in display_korvo1.cpp
+ * and the audio path in audio_korvo1.cpp. What remains here are the camera
+ * values the application still reads directly; they are retired when the capture
+ * path moves behind devkit::Camera.
  *
- * The values returned here keep the application's behaviour identical to the
- * pre-refactor code — this file moves constants, it does not change them.
+ * This is the only file in the devkit component that includes a board-specific
+ * BSP header for the camera, and it is compiled only when korvo1 is the selected
+ * devkit (see this devkit's CMakeLists.txt guard).
  */
 
 #include "devkit.hpp"
 
 /* `BSP_CAMERA_DEVICE` expands to `ESP_VIDEO_DVP_DEVICE_NAME`, which the BSP
  * header itself does not provide — esp_video_device.h must be included by the
- * translation unit that uses that macro (as camera.cpp did before). */
+ * translation unit that uses that macro. */
 #include "bsp/esp32_s31_korvo_1.h"
 #include "esp_video_device.h"
 
 namespace devkit {
-
-const char *name() { return "ESP32-S31 Korvo-1"; }
-
-uint32_t lcd_h_res() { return BSP_LCD_H_RES; }
-uint32_t lcd_draw_buf_height() { return CONFIG_BSP_LCD_DRAW_BUF_HEIGHT; }
-bool lcd_draw_buf_double() { return CONFIG_BSP_LCD_DRAW_BUF_DOUBLE != 0; }
 
 const char *camera_device() { return BSP_CAMERA_DEVICE; }
 
@@ -45,10 +41,5 @@ uint32_t camera_frame_height() { return FRAME_H; }
  * presented, not in the sensor registers. */
 bool frame_vertical_flip() { return true; }
 bool frame_byte_swap() { return true; }
-
-int mic_sample_rate() { return 16000; }
-int mic_channels() { return 2; }
-float mic_input_gain_db() { return 36.0f; }
-float afe_linear_gain() { return 10.0f; }
 
 }  // namespace devkit

@@ -31,23 +31,11 @@
 /* ---------------------------------------------------------------------------
  *  Legacy value accessors
  *
- * Superseded by the interfaces above, and removed as their last users move
- * behind them: Board::name(), Audio::afe_mic_format()/afe_linear_gain() and
- * Camera::*. Nothing new may be added here.
+ * Superseded by the interfaces above and removed as their last users move behind
+ * them. What is left here is the camera's, which goes when the capture path
+ * moves behind devkit::Camera. Nothing new may be added here.
  * ------------------------------------------------------------------------- */
 namespace devkit {
-
-/** Human-readable devkit name, e.g. "ESP32-S31 Korvo-1". */
-const char *name();
-
-/* ---- Display ------------------------------------------------------------ */
-
-/** Horizontal resolution of the devkit's LCD, in pixels. */
-uint32_t lcd_h_res();
-/** LVGL draw-buffer height, in pixels. */
-uint32_t lcd_draw_buf_height();
-/** Whether the LVGL draw buffer is double-buffered. */
-bool lcd_draw_buf_double();
 
 /* ---- Camera ------------------------------------------------------------- */
 
@@ -63,16 +51,5 @@ uint32_t camera_frame_height();
 bool frame_vertical_flip();
 /** Whether RGB565 frames arrive big-endian and must be byte-swapped. */
 bool frame_byte_swap();
-
-/* ---- Audio -------------------------------------------------------------- */
-
-/** Microphone sample rate in Hz expected by the speech pipeline. */
-int mic_sample_rate();
-/** Microphone channel count. */
-int mic_channels();
-/** Microphone input gain in dB, applied to the codec. */
-float mic_input_gain_db();
-/** AFE output linear gain applied before the speech models see the signal. */
-float afe_linear_gain();
 
 }  // namespace devkit

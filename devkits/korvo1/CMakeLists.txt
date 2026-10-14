@@ -17,5 +17,11 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
 endif()
 
 # The BSP dependency comes from this devkit's idf_component.yml.
-idf_component_register(SRCS "devkit_korvo1.cpp"
+#
+# One translation unit per interface: board identity/shared resources, display,
+# audio, and (for now) the camera values still read by the application.
+idf_component_register(SRCS "board_korvo1.cpp"
+                            "display_korvo1.cpp"
+                            "audio_korvo1.cpp"
+                            "devkit_korvo1.cpp"
                        REQUIRES devkit_api)

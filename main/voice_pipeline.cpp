@@ -6,8 +6,9 @@
 #include "voice_pipeline.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "bsp/esp-bsp.h"
 #include "devkit.hpp"
+
+#include <cstring>
 
 static constexpr const char *TAG = "voice";
 
@@ -15,12 +16,14 @@ static constexpr const char *TAG = "voice";
 //  Construction
 // ---------------------------------------------------------------------------
 
-VoicePipeline::VoicePipeline(callback_t on_wakeword,
+VoicePipeline::VoicePipeline(devkit::Audio *audio,
+                             callback_t on_wakeword,
                              callback_t on_command,
                              callback_t on_timeout)
     : afe_handle_(nullptr),
       afe_data_(nullptr),
-      mic_dev_(nullptr),
+      audio_(audio),
+      dual_mic_(false),
       multinet_(nullptr),
       mn_data_(nullptr),
       feed_task_(nullptr),
@@ -35,38 +38,27 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
 {
     ESP_LOGI(TAG, "Voice pipeline starting...");
 
-    /* ---- 1. Initialise microphone codec at 16 kHz stereo -------------- */
-    mic_dev_ = bsp_audio_codec_microphone_init();
-    if (mic_dev_ == nullptr) {
-        ESP_LOGE(TAG, "bsp_audio_codec_microphone_init failed");
+    /* ---- 1. Open the microphone through the devkit ------------------- */
+    if (audio_ == nullptr || !audio_->is_ok()) {
+        ESP_LOGE(TAG, "audio interface is not initialised");
         return;
     }
 
-    esp_codec_dev_sample_info_t mic_fs = {};
-    mic_fs.bits_per_sample = 16;
-    mic_fs.channel         = devkit::mic_channels();
-    mic_fs.sample_rate     = devkit::mic_sample_rate();
-    esp_err_t ret = esp_codec_dev_open(mic_dev_, &mic_fs);
+    /* The microphone geometry decides how the AFE reports a wake word. */
+    const char *mic_format = audio_->afe_mic_format();
+    dual_mic_ = (mic_format != nullptr && strcmp(mic_format, "MM") == 0);
+
+    esp_err_t ret = audio_->open_mic();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_codec_dev_open (mic) failed: %s", esp_err_to_name(ret));
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        ESP_LOGE(TAG, "open_mic failed: %s", esp_err_to_name(ret));
         return;
     }
-
-    /* Set microphone input gain */
-    ret = esp_codec_dev_set_in_gain(mic_dev_, devkit::mic_input_gain_db());
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_codec_dev_set_in_gain: %s", esp_err_to_name(ret));
-    }
-    ESP_LOGI(TAG, "Mic opened: 16 kHz, stereo, 16-bit");
 
     /* ---- 2. Load SR models from the "model" flash partition ----------- */
     models_ = esp_srmodel_init("model");
     if (models_ == nullptr) {
         ESP_LOGE(TAG, "esp_srmodel_init failed — no model partition?");
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
@@ -75,17 +67,19 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     }
 
     /* ---- 3. Configure AFE -------------------------------------------- */
-    afe_config_t *afe_config = afe_config_init("MM", models_,
-                                               AFE_TYPE_SR, AFE_MODE_LOW_COST);
+    /* The microphone format is the devkit's: "MM" for a dual-mic board, "M"
+     * for a single-mic one. afe_config_init only reads the string. */
+    afe_config_t *afe_config = afe_config_init(
+        const_cast<char *>(audio_->afe_mic_format()), models_,
+        AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (afe_config == nullptr) {
         ESP_LOGE(TAG, "afe_config_init failed");
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
     /* Boost AFE output gain for MultiNet */
-    afe_config->afe_linear_gain = devkit::afe_linear_gain();
+    afe_config->afe_linear_gain = audio_->afe_linear_gain();
 
     if (afe_config->wakenet_model_name != nullptr) {
         ESP_LOGI(TAG, "WakeNet model: %s", afe_config->wakenet_model_name);
@@ -95,8 +89,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     if (afe_handle_ == nullptr) {
         ESP_LOGE(TAG, "esp_afe_handle_from_config failed");
         afe_config_free(afe_config);
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
@@ -105,8 +98,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
 
     if (afe_data_ == nullptr) {
         ESP_LOGE(TAG, "afe_handle_->create_from_config failed");
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
     ESP_LOGI(TAG, "AFE created");
@@ -128,8 +120,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
     if (timeout_timer_ == nullptr) {
         ESP_LOGE(TAG, "xTimerCreate failed");
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
@@ -142,8 +133,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         task_flag_ = 0;
         xTimerDelete(timeout_timer_, 0);
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
@@ -154,8 +144,7 @@ VoicePipeline::VoicePipeline(callback_t on_wakeword,
         vTaskDelete(feed_task_);
         xTimerDelete(timeout_timer_, 0);
         afe_handle_->destroy(afe_data_);
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+        audio_->close_mic();
         return;
     }
 
@@ -193,9 +182,8 @@ VoicePipeline::~VoicePipeline()
         afe_data_ = nullptr;
     }
 
-    if (mic_dev_ != nullptr) {
-        esp_codec_dev_close(mic_dev_);
-        mic_dev_ = nullptr;
+    if (audio_ != nullptr) {
+        audio_->close_mic();
     }
 }
 
@@ -220,6 +208,17 @@ void VoicePipeline::cancel_command_timeout()
     }
 }
 
+void VoicePipeline::enter_command_mode_on_wake()
+{
+    command_mode_ = true;
+    start_command_timeout();
+    ESP_LOGI(TAG, "Command mode: multiword listening (15s)");
+
+    if (on_wakeword_) {
+        on_wakeword_("");
+    }
+}
+
 // ---------------------------------------------------------------------------
 //  FreeRTOS — feed task
 // ---------------------------------------------------------------------------
@@ -228,9 +227,8 @@ void VoicePipeline::feed_task_fn(void *arg)
 {
     auto *self = static_cast<VoicePipeline *>(arg);
 
-    esp_codec_dev_handle_t mic_dev = self->mic_dev_;
-    if (mic_dev == nullptr) {
-        ESP_LOGE(TAG, "feed: no mic handle");
+    if (self->audio_ == nullptr) {
+        ESP_LOGE(TAG, "feed: no audio interface");
         self->task_flag_ = 0;
         vTaskDelete(nullptr);
         return;
@@ -251,9 +249,9 @@ void VoicePipeline::feed_task_fn(void *arg)
     }
 
     while (self->task_flag_) {
-        esp_err_t ret = esp_codec_dev_read(mic_dev, i2s_buff, buf_len);
+        esp_err_t ret = self->audio_->read(i2s_buff, buf_len);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "esp_codec_dev_read: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "mic read: %s", esp_err_to_name(ret));
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -398,23 +396,25 @@ void VoicePipeline::detect_task_fn(void *arg)
             }
         }
 
-        /* ---- Wake word: for dual-mic AFE, wait for CHANNEL_VERIFIED -- */
+        /* ---- Wake word -------------------------------------------------
+         * A dual-mic AFE reports the wake word in two stages: DETECTED, then
+         * CHANNEL_VERIFIED once it has picked the microphone to listen on.
+         * Command mode starts on the verified stage. A single-mic devkit has
+         * no second stage, so it starts on DETECTED. */
         if (res->wakeup_state == WAKENET_DETECTED) {
             ESP_LOGI(TAG, ">>> Wake word detected <<<");
             /* Clean MultiNet state on wake word — skainet pattern */
             multinet->clean(model_data);
+
+            if (!self->dual_mic_) {
+                self->enter_command_mode_on_wake();
+            }
         }
 
-        if (res->wakeup_state == WAKENET_CHANNEL_VERIFIED) {
+        if (self->dual_mic_ && res->wakeup_state == WAKENET_CHANNEL_VERIFIED) {
             ESP_LOGI(TAG, ">>> Channel verified (index %d) <<<",
                      res->trigger_channel_id);
-            self->command_mode_ = true;
-            self->start_command_timeout();
-            ESP_LOGI(TAG, "Command mode: multiword listening (15s)");
-
-            if (self->on_wakeword_) {
-                self->on_wakeword_("");
-            }
+            self->enter_command_mode_on_wake();
         }
 
         /* ---- Command mode: feed AFE output to MultiNet --------------- */

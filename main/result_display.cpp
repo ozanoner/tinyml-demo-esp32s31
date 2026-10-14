@@ -25,6 +25,7 @@ class ResultScreen {
 public:
     ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
                  const std::list<dl::detect::result_t> &results,
+                 const devkit::ResultLayout &layout,
                  ResultDisplay::on_dismiss_cb_t cb);
     ~ResultScreen();
     void dismiss();
@@ -50,6 +51,7 @@ void ResultDisplay::show(const uint8_t *frame,
                          uint32_t      width,
                          uint32_t      height,
                          const std::list<dl::detect::result_t> &results,
+                         const devkit::ResultLayout            &layout,
                          on_dismiss_cb_t on_dismiss)
 {
     /* Allocate static buffer on first use (one-shot, no fragmentation) */
@@ -68,13 +70,14 @@ void ResultDisplay::show(const uint8_t *frame,
     struct ctx_t {
         uint8_t    *f; uint32_t w, h;
         std::list<dl::detect::result_t> results;
+        devkit::ResultLayout layout;
         on_dismiss_cb_t cb;
     };
     auto *ctx = new ctx_t{s_raw_buf, width, height,
-                          results, std::move(on_dismiss)};
+                          results, layout, std::move(on_dismiss)};
     lv_async_call([](void *arg) {
         auto *c = static_cast<ctx_t *>(arg);
-        new ResultScreen(c->f, c->w, c->h, c->results, std::move(c->cb));
+        new ResultScreen(c->f, c->w, c->h, c->results, c->layout, std::move(c->cb));
         delete c;
     }, ctx);
 }
@@ -85,6 +88,7 @@ void ResultDisplay::show(const uint8_t *frame,
 
 ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
                            const std::list<dl::detect::result_t> &results,
+                           const devkit::ResultLayout &layout,
                            ResultDisplay::on_dismiss_cb_t cb)
     : img_(nullptr), lv_timer_(nullptr), swapped_(nullptr),
       dismissed_(false), cb_(std::move(cb))
@@ -127,10 +131,13 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
     img_dsc_.data          = swapped_;
     img_dsc_.data_size     = (uint32_t)(npix * 2);
 
-    /* Layout */
-    constexpr int32_t IMG_X = 280, IMG_Y = 120;
-    constexpr int32_t LABEL_X = 540, LABEL_W = 240;
-    constexpr int32_t HINT_Y = 375;   /* below the image (IMG_Y + 240 = 360) */
+    /* Layout — placement comes from the devkit, so a different panel size or a
+     * different camera geometry needs no change in this file. */
+    const int32_t IMG_X   = layout.img_x;
+    const int32_t IMG_Y   = layout.img_y;
+    const int32_t LABEL_X = layout.label_x;
+    const int32_t LABEL_W = layout.label_w;
+    const int32_t HINT_Y  = layout.hint_y;
 
     lv_obj_t *parent = lv_scr_act();
 
@@ -191,10 +198,8 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
         widgets_.push_back(msg);
     }
 
-    /* Dismiss hint, centred under the camera image.  The image column is
-     * centred on the panel (280 + 240/2 = 400 = panel mid), so TOP_MID with no
-     * x offset centres the hint on the image.  No explicit font — inherits the
-     * theme like the other overlay labels. */
+    /* Dismiss hint, below the camera image and centred on the panel.  No
+     * explicit font — inherits the theme like the other overlay labels. */
     auto *hint = lv_label_create(parent);
     lv_label_set_text(hint, "Tap to close");
     lv_obj_set_style_text_color(hint, lv_color_white(), 0);

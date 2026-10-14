@@ -40,6 +40,13 @@ extern "C" {
 
 static constexpr const char* TAG = "app";
 
+/* Devkit interfaces — created before the first log line so the banner can name
+ * the board. The camera is still brought up through the BSP here; it moves
+ * behind devkit::Camera next. */
+static devkit::Board   *g_board   = nullptr;
+static devkit::Audio   *g_audio   = nullptr;
+static devkit::Display *g_display = nullptr;
+
 /* Persistent state display — survives app_main return.
  * Created by the splash dismiss callback so there is no blank frame. */
 static StateDisplay *g_state = nullptr;
@@ -111,58 +118,22 @@ static void print_memory_summary(const char *label)
 }
 
 /* ---------------------------------------------------------------------------
- *  BSP initialisation helpers
+ *  Devkit bring-up
+ *
+ * The application holds the interfaces and drives them in a fixed order: the
+ * board's shared resources first (the I2C bus carries both the codec and the
+ * touch controller), then audio, then the display.
  * ------------------------------------------------------------------------- */
 
-static esp_err_t init_bsp_i2c(void)
+static void create_devkit_interfaces()
 {
-    ESP_LOGI(TAG, "BSP I2C init...");
-    esp_err_t ret = bsp_i2c_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_i2c_init failed: %s", esp_err_to_name(ret));
+    g_board   = devkit::Board::create();
+    g_audio   = devkit::Audio::create();
+    g_display = devkit::Display::create();
+
+    if (g_board == nullptr || g_audio == nullptr || g_display == nullptr) {
+        ESP_LOGE(TAG, "Failed to create the devkit interfaces");
     }
-    return ret;
-}
-
-static esp_err_t init_bsp_audio(void)
-{
-    ESP_LOGI(TAG, "BSP audio init...");
-    esp_err_t ret = bsp_audio_init(NULL);   /* NULL = default I2S config */
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_audio_init failed: %s", esp_err_to_name(ret));
-    }
-    return ret;
-}
-
-static esp_err_t init_bsp_display(void)
-{
-    ESP_LOGI(TAG, "BSP display + LVGL init...");
-
-    const bsp_display_cfg_t disp_cfg = {
-        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = devkit::lcd_h_res() * devkit::lcd_draw_buf_height(),
-        .double_buffer = devkit::lcd_draw_buf_double(),
-        .flags = {
-            .buff_dma = false,
-            .buff_spiram = true,
-            .sw_rotate = false,
-        }
-    };
-
-    lv_display_t *disp = bsp_display_start_with_config(&disp_cfg);
-    if (disp == NULL) {
-        ESP_LOGE(TAG, "bsp_display_start_with_config returned NULL");
-        return ESP_FAIL;
-    }
-
-    /* Backlight — best-effort (NOT_SUPPORTED is expected on this board). */
-    esp_err_t ret = bsp_display_backlight_on();
-    if (ret != ESP_OK && ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGE(TAG, "bsp_display_backlight_on failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    return ESP_OK;
 }
 
 static esp_err_t init_bsp_camera(void)
@@ -181,12 +152,18 @@ static esp_err_t init_bsp_camera(void)
 
 extern "C" void app_main(void)
 {
+    /* ---- Devkit interfaces (needed for the banner) ---- */
+    create_devkit_interfaces();
+    if (g_board == nullptr || g_audio == nullptr || g_display == nullptr) {
+        return;
+    }
+
     /* ---- Chip info banner ---- */
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, "  TinyML Demo \u2014 %s", devkit::name());
+    ESP_LOGI(TAG, "  TinyML Demo \u2014 %s", g_board->name());
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, "Chip:         ESP32-S31");
     ESP_LOGI(TAG, "Cores:        %d", chip_info.cores);
@@ -197,20 +174,21 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "================================================");
 
     /* ---- Peripheral init (fatal on failure) ---- */
-    ESP_ERROR_CHECK(init_bsp_i2c());
+    ESP_ERROR_CHECK(g_board->init());
     print_memory_summary("I2C");
 
-    ESP_ERROR_CHECK(init_bsp_audio());
+    ESP_ERROR_CHECK(g_audio->init());
     print_memory_summary("AUDIO");
 
-    ESP_ERROR_CHECK(init_bsp_display());
+    ESP_ERROR_CHECK(g_display->init());
+    ESP_ERROR_CHECK(g_display->backlight_on());
     print_memory_summary("DISPLAY+LVGL");
 
     ESP_ERROR_CHECK(init_bsp_camera());
     print_memory_summary("CAMERA");
 
     /* ---- Splash screen ---- */
-    if (!bsp_display_lock(0)) {
+    if (!g_display->lock(0)) {
         ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
     } else {
         Splash splash(
@@ -218,7 +196,7 @@ extern "C" void app_main(void)
                       "Tap anywhere to skip",
                       5000,
                       on_splash_dismissed);
-        bsp_display_unlock();
+        g_display->unlock();
 
         while (splash.is_active()) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -295,7 +273,8 @@ extern "C" void app_main(void)
                         /* Frame data still alive — camera owns it, detect
                          * hasn't freed its copy yet.  ResultDisplay copies
                          * into its static buffer synchronously. */
-                        ResultDisplay::show(data, w, h, results, []() {
+                        ResultDisplay::show(data, w, h, results,
+                                            g_display->layout(), []() {
                             if (g_voice != nullptr) {
                                 g_voice->enter_command_mode();
                             }
@@ -319,7 +298,8 @@ extern "C" void app_main(void)
         }
     };
 
-    g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+    g_voice = new (std::nothrow) VoicePipeline(g_audio,
+                                               std::move(on_wakeword),
                                                std::move(on_command),
                                                std::move(on_timeout));
     if (g_voice == nullptr) {
