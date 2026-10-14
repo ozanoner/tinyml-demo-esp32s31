@@ -1,9 +1,9 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  ## Required IDF version — pinned to the version this project is verified
-  ## against (espressif/idf:release-v6.1 in .devcontainer/Dockerfile).
+  ## Required IDF version — the ESP-IDF 6.2 development line
+  ## (espressif/idf:latest, named in .devcontainer/devcontainer.json).
   idf:
-    version: "6.1.0"
+    version: ">=6.2"
   # # Put list of dependencies here
   # # For components maintained by Espressif:
   # component: "~1.0.0"

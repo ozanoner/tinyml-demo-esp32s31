@@ -31,3 +31,10 @@ set(EXTRA_COMPONENT_DIRS "devkits/${DEVKIT}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(tinyml-demo-esp32s31)
+
+# GCC 16, the toolchain in the ESP-IDF 6.2 image, adds
+# -Wnon-c-typedef-for-linkage. esp-dl 3.3.8 trips it in
+# vision/image/dl_image_bmp.cpp and IDF builds with -Werror, so the build fails.
+# Demote it to a warning (it still prints) build-wide instead of editing the
+# third-party component.  See issue #33.
+idf_build_set_property(CXX_COMPILE_OPTIONS "-Wno-error=non-c-typedef-for-linkage" APPEND)

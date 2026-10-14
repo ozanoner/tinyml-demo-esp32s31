@@ -20,16 +20,16 @@ inference, and display bounding boxes on the 800×480 LCD.
 | Component | Detail |
 |-----------|--------|
 | SoC | ESP32-S31 (RISC-V dual-core, LP core, 300 MHz) |
-| Devkit | ESP32-S31-Korvo-1 V1.0 (16 MB Octal PSRAM, 16 MB flash, 800×480 LCD + touch, OV3660 camera, ES8311 dual-mic codec) |
-| SDK | ESP-IDF v6.1 (commit `14f663f003e`), target `esp32s31` |
-| GUI | LVGL 9.2 (`lvgl/lvgl`) via `espressif/esp_lvgl_port` |
-| BSP | `espressif/esp32_s31_korvo_1` 1.0.0 |
+| Devkit | ESP32-S31-Korvo-1 V1.1 (16 MB Octal PSRAM, 16 MB flash, 800×480 LCD + touch, OV3660 camera, ES8389 dual-mic codec) |
+| SDK | ESP-IDF 6.2 development line (`espressif/idf:latest`, `idf.py --version` → `v6.1-dev-8440-gab95e70748f`), target `esp32s31` |
+| GUI | LVGL 9.6.0~1 (`lvgl/lvgl`) via `espressif/esp_lvgl_port` |
+| BSP | `espressif/esp32_s31_korvo_1` 1.0.1 |
 | Voice | ESP-SR: WakeNet9_HIESP (wake word), MultiNet7_Quant (commands), VAD, AEC, NS |
 | ML | ESP-DL (`espressif/esp-dl` 3.3.8) + `espressif/coco_detect` 0.4.0 — YOLO11n 320×320 int8 |
 | Camera | OV3660 via `espressif/esp_cam_sensor` |
 | Touch | GT1151 via `espressif/esp_lcd_touch_gt1151` |
 | Display | ST7262 LCD via SPI + DMA, 16-bit RGB565 |
-| Codec | ES8311 via `espressif/esp_codec_dev` |
+| Codec | ES8389 via `espressif/esp_codec_dev` |
 
 ## Solution Architecture
 
@@ -86,7 +86,7 @@ partition).
 
 ### Prerequisites
 
-- ESP-IDF v6.1 with `esp32s31` target support
+- ESP-IDF 6.2 (`espressif/idf:latest`) with `esp32s31` target support
 - `esptool` 5.3+ on the host that has the devkit connected by USB
 
 ### Build (inside devcontainer)
@@ -96,8 +96,8 @@ Inside the container:
 
 ```bash
 cd /project
-idf.py set-target esp32s31
-idf.py build
+DEVKIT=korvo1 idf.py --preview set-target esp32s31
+DEVKIT=korvo1 idf.py build
 ```
 
 ### Flash (app partition only)
@@ -135,7 +135,7 @@ Press Ctrl-] to exit miniterm.
 ## References
 
 - [ESP32-S31 Korvo-1 BSP](https://components.espressif.com/components/espressif/esp32_s31_korvo_1)
-- [ESP-IDF Programming Guide v6.1](https://docs.espressif.com/projects/esp-idf/en/v6.1/)
+- [ESP-IDF Programming Guide (6.2 development line)](https://docs.espressif.com/projects/esp-idf/en/latest/)
 - [ESP-SR Speech Recognition](https://github.com/espressif/esp-sr)
 - [ESP-DL Deep Learning Library](https://github.com/espressif/esp-dl)
 - [COCODetect Component](https://components.espressif.com/components/espressif/coco_detect)
