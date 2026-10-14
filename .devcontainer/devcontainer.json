@@ -3,9 +3,6 @@
     "image": "espressif/idf:latest",
     "workspaceMount": "source=${localWorkspaceFolder},target=/project,type=bind",
     "workspaceFolder": "/project",
-    "containerEnv": {
-        "ESP_IDF_VERSION": "latest"
-    },
     "runArgs": [
         "--name",
         "tinyml-demo-esp32s31"
