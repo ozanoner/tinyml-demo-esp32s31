@@ -5,12 +5,24 @@
  * Creates a centred, single-line label on the default display's active
  * screen.  The background colour is preserved from the splash screen so
  * there is no visual flash at transition.
+ *
+ * Threading: LVGL is not thread-safe, so this class never touches LVGL from
+ * the caller's task.  Label writes issued by other tasks (voice pipeline,
+ * inference callback, error paths) are marshalled onto the LVGL task with
+ * lv_async_call(), and the countdown / auto-revert ticks come from an LVGL
+ * timer, so they run in the LVGL task too.  The countdown-completion callback
+ * does camera capture and starts inference — that is handed to the
+ * timer-service task so it can never block LVGL.
  */
 
 #include "state_display.hpp"
 #include "esp_log.h"
 
 static constexpr const char *TAG = "state";
+
+static constexpr int      COUNTDOWN_START = 3;     /* cheese 3... → 2... → 1... */
+static constexpr uint32_t COUNTDOWN_MS    = 1000;  /* one countdown tick per second */
+static constexpr uint32_t REVERT_MS       = 3000;  /* hold time for "\"XX\" detected" */
 
 // ---------------------------------------------------------------------------
 //  Static colour constants
@@ -20,15 +32,17 @@ const lv_color_t StateDisplay::FG = lv_color_hex(0xffffff);
 const lv_color_t StateDisplay::BG = lv_color_hex(0x1a1a2e);
 
 // ---------------------------------------------------------------------------
-//  Construction
+//  Construction  —  MUST run in the LVGL task
 // ---------------------------------------------------------------------------
 
 StateDisplay::StateDisplay(const char *initial)
     : label_(nullptr)
     , timer_(nullptr)
     , countdown_(0)
+    , period_ms_(REVERT_MS)
     , revert_to_(STATE_COMMAND)
     , countdown_cb_(nullptr)
+    , text_{}
 {
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr == nullptr) {
@@ -50,21 +64,29 @@ StateDisplay::StateDisplay(const char *initial)
     lv_obj_set_style_text_font(label_, &lv_font_montserrat_28, 0);
     lv_obj_align(label_, LV_ALIGN_CENTER, 0, -20);
 
-    /* Create a one-shot timer for display auto-revert / countdown ticks */
-    timer_ = xTimerCreate("state_tmr", pdMS_TO_TICKS(3000),
-                          pdFALSE, this, on_timer);
+    /* Countdown / auto-revert ticks.  This is an LVGL timer, so the callback
+     * runs in the LVGL task where the label lives — xTimerCreate() would run
+     * it in the timer-service task and race with LVGL.  Created paused
+     * (repeat_count stays at the default "infinite"); show_cmd()/show_temp()
+     * arm it and on_timer() pauses it again when the sequence ends. */
+    timer_ = lv_timer_create(on_timer, COUNTDOWN_MS, this);
+    if (timer_ == nullptr) {
+        ESP_LOGE(TAG, "lv_timer_create failed — countdown and revert disabled");
+    } else {
+        lv_timer_pause(timer_);
+    }
 
     ESP_LOGI(TAG, "State label created: \"%s\"", initial);
 }
 
 // ---------------------------------------------------------------------------
-//  Destruction
+//  Destruction  —  MUST run in the LVGL task
 // ---------------------------------------------------------------------------
 
 StateDisplay::~StateDisplay()
 {
     if (timer_ != nullptr) {
-        xTimerDelete(timer_, 0);
+        lv_timer_delete(timer_);
         timer_ = nullptr;
     }
     if (label_) {
@@ -79,12 +101,17 @@ StateDisplay::~StateDisplay()
 
 void StateDisplay::set_state(const char *text)
 {
+    if (text == nullptr) return;
     if (label_ == nullptr) {
         ESP_LOGW(TAG, "set_state: no label for '%s'", text);
         return;
     }
-    lv_label_set_text(label_, text);
-    ESP_LOGI(TAG, "State: %s", text);
+
+    /* Keep our own copy — callers pass stack buffers and the write below runs
+     * later, in the LVGL task. */
+    snprintf(text_, sizeof(text_), "%s", text);
+    ESP_LOGI(TAG, "State: %s", text_);
+    lv_async_call(apply_text, this);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,29 +120,26 @@ void StateDisplay::set_state(const char *text)
 
 void StateDisplay::show_cmd(const char *cmd)
 {
-    if (label_ == nullptr) return;
+    if (cmd == nullptr) return;
+    if (label_ == nullptr) {
+        ESP_LOGW(TAG, "show_cmd: no label for '%s'", cmd);
+        return;
+    }
 
     if (strcmp(cmd, "cheese") == 0) {
         /* Start countdown: cheese 3... → cheese 2... → cheese 1... */
-        countdown_ = 3;
-        set_state("cheese 3...");
-        if (timer_ != nullptr) {
-            xTimerStop(timer_, 0);
-            xTimerChangePeriod(timer_, pdMS_TO_TICKS(1000), 0);
-            xTimerReset(timer_, 0);
-        }
+        countdown_ = COUNTDOWN_START;
+        snprintf(text_, sizeof(text_), "cheese %d...", countdown_);
+        period_ms_ = COUNTDOWN_MS;
     } else {
         /* Show "\"XX\" detected" for 3 seconds, then revert */
-        static char buf[64];
-        snprintf(buf, sizeof(buf), "\"%s\" detected", cmd);
-        set_state(buf);
-        countdown_ = 0;  /* no countdown — just revert at next tick */
-        if (timer_ != nullptr) {
-            xTimerStop(timer_, 0);
-            xTimerChangePeriod(timer_, pdMS_TO_TICKS(3000), 0);
-            xTimerReset(timer_, 0);
-        }
+        countdown_ = 0;  /* no countdown — the single tick reverts */
+        snprintf(text_, sizeof(text_), "\"%s\" detected", cmd);
+        period_ms_ = REVERT_MS;
     }
+
+    ESP_LOGI(TAG, "State: %s", text_);
+    lv_async_call(apply_show_cmd, this);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,54 +148,102 @@ void StateDisplay::show_cmd(const char *cmd)
 
 void StateDisplay::show_temp(const char *text, uint32_t timeout_ms, const char *revert_to)
 {
+    if (text == nullptr) return;
     if (label_ == nullptr) return;
 
-    revert_to_ = revert_to;
+    revert_to_ = (revert_to != nullptr) ? revert_to : STATE_COMMAND;
     countdown_ = 0;
-    countdown_cb_ = nullptr;
+    countdown_cb_ = nullptr;  /* cancel any pending countdown action */
 
-    lv_label_set_text(label_, text);
+    snprintf(text_, sizeof(text_), "%s", text);
     ESP_LOGI(TAG, "Temp state: %s  timeout=%" PRIu32 "ms  revert=%s",
-             text, timeout_ms, revert_to);
+             text_, timeout_ms, revert_to_);
 
-    if (timer_ != nullptr) {
-        /* Timer may be dormant (one-shot has fired) — xTimerReset handles that.
-         * Do NOT call xTimerStop first; it returns pdFAIL on a dormant timer. */
-        xTimerChangePeriod(timer_, pdMS_TO_TICKS(timeout_ms), 0);
-        xTimerReset(timer_, 0);
-    }
+    period_ms_ = timeout_ms;
+    lv_async_call(apply_show_cmd, this);
 }
 
 // ---------------------------------------------------------------------------
-//  Private — timer callback
+//  Private — timer handling  (LVGL task)
 // ---------------------------------------------------------------------------
 
-void StateDisplay::on_timer(TimerHandle_t t)
+void StateDisplay::arm(uint32_t period_ms)
 {
-    auto *self = static_cast<StateDisplay *>(pvTimerGetTimerID(t));
+    if (timer_ == nullptr) return;
+
+    period_ms_ = period_ms;
+    lv_timer_pause(timer_);
+    lv_timer_set_period(timer_, period_ms);
+    lv_timer_reset(timer_);
+    lv_timer_resume(timer_);
+}
+
+void StateDisplay::on_timer(lv_timer_t *t)
+{
+    auto *self = static_cast<StateDisplay *>(lv_timer_get_user_data(t));
     if (self == nullptr || self->label_ == nullptr) return;
 
     if (self->countdown_ > 1) {
-        /* Still counting — show next number and re-arm */
+        /* Still counting — show the next number and keep ticking.  Safe to
+         * write the label directly: this callback runs in the LVGL task. */
         self->countdown_--;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "cheese %d...", self->countdown_);
-        self->set_state(buf);
-        xTimerReset(self->timer_, 0);
+        snprintf(self->text_, sizeof(self->text_), "cheese %d...", self->countdown_);
+        ESP_LOGI(TAG, "State: %s", self->text_);
+        lv_label_set_text(self->label_, self->text_);
     } else if (self->countdown_ == 1) {
-        /* Countdown reached zero — fire the callback, then revert */
+        /* Countdown reached zero — stop ticking, then fire the capture
+         * callback off the LVGL task (camera + inference would block it). */
         self->countdown_ = 0;
-        /* Fire capture callback before reverting display */
+        lv_timer_pause(t);
         if (self->countdown_cb_) {
-            auto cb = std::move(self->countdown_cb_);
-            self->countdown_cb_ = nullptr;  // one-shot
-            cb();
+            if (xTimerPendFunctionCall(run_countdown_cb, self, 0, 0) != pdPASS) {
+                ESP_LOGE(TAG, "xTimerPendFunctionCall failed — reverting display");
+                self->set_state(STATE_COMMAND);
+            }
         } else {
             self->set_state(STATE_COMMAND);
         }
     } else {
-        /* No countdown — revert to stored target */
+        /* No countdown — revert to the stored target and stop. */
         self->countdown_ = 0;
+        lv_timer_pause(t);
         self->set_state(self->revert_to_);
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Private — LVGL task helpers
+// ---------------------------------------------------------------------------
+
+void StateDisplay::apply_text(void *arg)
+{
+    auto *self = static_cast<StateDisplay *>(arg);
+    if (self == nullptr || self->label_ == nullptr) return;
+    lv_label_set_text(self->label_, self->text_);
+}
+
+void StateDisplay::apply_show_cmd(void *arg)
+{
+    auto *self = static_cast<StateDisplay *>(arg);
+    if (self == nullptr || self->label_ == nullptr) return;
+    lv_label_set_text(self->label_, self->text_);
+    self->arm(self->period_ms_);
+}
+
+// ---------------------------------------------------------------------------
+//  Private — timer-service task helper
+// ---------------------------------------------------------------------------
+
+void StateDisplay::run_countdown_cb(void *arg1, uint32_t /*arg2*/)
+{
+    auto *self = static_cast<StateDisplay *>(arg1);
+    if (self == nullptr) return;
+
+    if (self->countdown_cb_) {
+        auto cb = std::move(self->countdown_cb_);
+        self->countdown_cb_ = nullptr;  // one-shot
+        cb();
+    } else {
+        self->set_state(STATE_COMMAND);
     }
 }
