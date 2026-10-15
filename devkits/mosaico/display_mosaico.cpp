@@ -74,13 +74,13 @@ public:
     /**
      * 480x480 panel. Derived from the panel geometry rather than copied from
      * another devkit, so every widget lands on-panel whatever the size: the
-     * detection-label column is the right half and the dismiss hint sits in the
+     * detection-label column is the right third and the dismiss hint sits in the
      * bottom margin.
      *
-     * The captured frame is larger than this panel (the camera's UYVY modes
-     * start at 1024x768 — see this devkit's sdkconfig.defaults), so the image is
-     * anchored at the origin and clipped by the panel rather than fitted; there
-     * is no room beside or below it for the labels.
+     * The image is the size the devkit asks the camera for and scales to with
+     * the PPA: 320x180, which is exactly a quarter of the sensor's 1280x720 in
+     * both axes (a whole 1/16 step of the scaler) and keeps the sensor's 16:9
+     * frame undistorted. That leaves the right 160 px for the labels.
      */
     ResultLayout layout() const override
     {
@@ -89,9 +89,11 @@ public:
 
         return ResultLayout{
             .img_x   = 0,
-            .img_y   = 0,
-            .label_x = W / 2,
-            .label_w = W / 2,
+            .img_y   = H / 8,
+            .img_w   = 320,
+            .img_h   = 180,
+            .label_x = W - (W / 3),
+            .label_w = W / 3,
             .hint_y  = H - (H / 10),
         };
     }

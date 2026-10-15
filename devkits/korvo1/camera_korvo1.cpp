@@ -271,37 +271,63 @@ public:
     }
 
     /**
-     * Packed RGB888 for the detector. Deliberately no flip and no byte swap:
-     * the detector has always seen the frame as the sensor produced it, and the
-     * model is insensitive to the 180-degree rotation.
+     * Packed RGB888 for the detector, at the captured geometry: R, G, B from
+     * the lowest address (PixelOrder::RGB), written by the loop below.
+     *
+     * This devkit has no scaler, so the frame's own size is what comes back and
+     * the detector resizes for the model itself — the behaviour the application
+     * had when it converted the frame for itself. Deliberately no flip and no
+     * byte swap: the detector has always seen the frame as the sensor produced
+     * it, and the model is insensitive to the 180-degree rotation.
      */
-    esp_err_t to_rgb888(const Frame &src, uint8_t *dst) override
+    esp_err_t to_model_input(const Frame &src, uint32_t want_w, uint32_t want_h,
+                             Image &out) override
     {
-        if (src.data == nullptr || dst == nullptr) {
+        if (src.data == nullptr) {
             return ESP_ERR_INVALID_ARG;
         }
         if (src.format != FrameFormat::RGB565_BE) {
-            ESP_LOGE(TAG, "to_rgb888: unexpected source format %d", (int)src.format);
+            ESP_LOGE(TAG, "to_model_input: unexpected source format %d", (int)src.format);
             return ESP_ERR_NOT_SUPPORTED;
+        }
+        if (want_w != src.width || want_h != src.height) {
+            ESP_LOGW(TAG, "to_model_input: no scaler, giving %lux%lu not %lux%lu",
+                     (unsigned long)src.width, (unsigned long)src.height,
+                     (unsigned long)want_w, (unsigned long)want_h);
+        }
+
+        const uint32_t needed = src.width * src.height * 3u;
+        esp_err_t ret = ensure_rgb_buffer(needed);
+        if (ret != ESP_OK) {
+            return ret;
         }
 
         const uint32_t npixels = src.width * src.height;
         for (uint32_t i = 0; i < npixels; i++) {
             const uint8_t *s = src.data + i * 2;
             uint16_t p = ((uint16_t)s[0] << 8) | s[1];
-            dst[i * 3 + 0] = (p >> 8) & 0xf8;
-            dst[i * 3 + 1] = (p >> 3) & 0xfc;
-            dst[i * 3 + 2] = (p << 3) & 0xf8;
+            rgb_[i * 3 + 0] = (p >> 8) & 0xf8;
+            rgb_[i * 3 + 1] = (p >> 3) & 0xfc;
+            rgb_[i * 3 + 2] = (p << 3) & 0xf8;
         }
+
+        out.data   = rgb_;
+        out.width  = src.width;
+        out.height = src.height;
+        out.stride = src.width * 3u;
+        out.bytes  = needed;
+        out.order  = PixelOrder::RGB;   /* R at the lowest address */
         return ESP_OK;
     }
 
     /**
      * The panel's view of the frame: RGB565 little-endian for LVGL, rows
-     * reversed because the OV3660 is mounted upside-down on this board.
+     * reversed because the OV3660 is mounted upside-down on this board. Same
+     * geometry contract as to_model_input(): no scaler here, so the frame's own
+     * size comes back.
      */
-    esp_err_t to_display(const Frame &src, const uint8_t *&data,
-                         uint32_t &stride, uint32_t &bytes) override
+    esp_err_t to_display(const Frame &src, uint32_t want_w, uint32_t want_h,
+                         Image &out) override
     {
         if (src.data == nullptr) {
             return ESP_ERR_INVALID_ARG;
@@ -309,6 +335,11 @@ public:
         if (src.format != FrameFormat::RGB565_BE) {
             ESP_LOGE(TAG, "to_display: unexpected source format %d", (int)src.format);
             return ESP_ERR_NOT_SUPPORTED;
+        }
+        if (want_w != src.width || want_h != src.height) {
+            ESP_LOGW(TAG, "to_display: no scaler, showing %lux%lu not %lux%lu",
+                     (unsigned long)src.width, (unsigned long)src.height,
+                     (unsigned long)want_w, (unsigned long)want_h);
         }
 
         const uint32_t row_bytes    = src.width * FRAME_BPP;
@@ -340,17 +371,42 @@ public:
             }
         }
 
-        data   = disp_;
-        stride = row_bytes;
-        bytes  = needed_bytes;
+        out.data   = disp_;
+        out.width  = src.width;
+        out.height = src.height;
+        out.stride = row_bytes;
+        out.bytes  = needed_bytes;
         return ESP_OK;
     }
 
 private:
+    /** The RGB888 buffer for the detector, grown on demand and reused. */
+    esp_err_t ensure_rgb_buffer(uint32_t needed)
+    {
+        if (rgb_ != nullptr && rgb_size_ >= needed) {
+            return ESP_OK;
+        }
+        if (rgb_ != nullptr) {
+            heap_caps_free(rgb_);
+            rgb_ = nullptr;
+            rgb_size_ = 0;
+        }
+        rgb_ = static_cast<uint8_t *>(heap_caps_malloc(needed, MALLOC_CAP_SPIRAM));
+        if (rgb_ == nullptr) {
+            ESP_LOGE(TAG, "OOM for RGB888 buffer (%lu bytes)",
+                     (unsigned long)needed);
+            return ESP_ERR_NO_MEM;
+        }
+        rgb_size_ = needed;
+        return ESP_OK;
+    }
+
     uint8_t *fb_;         /* capture buffer: BUFFER_COUNT frames */
     uint32_t fb_size_;
     uint8_t *disp_;       /* display-form buffer, grown on demand */
     uint32_t disp_size_;
+    uint8_t *rgb_;        /* detector-form buffer, grown on demand */
+    uint32_t rgb_size_;
 };
 
 }  // namespace

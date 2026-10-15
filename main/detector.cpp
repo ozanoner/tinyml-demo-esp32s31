@@ -2,8 +2,11 @@
  * @file detector.cpp
  * @brief COCO object detection — wraps COCODetect, owns inference task.
  *
- * The input is packed RGB888; whatever the camera delivered was converted by
- * devkit::Camera before it reached this file.
+ * The input is three bytes per pixel; whatever the camera delivered was
+ * converted by devkit::Camera before it reached this file, together with the
+ * component order that conversion produced. That order is all this file needs to
+ * pick esp-dl's matching pixel type — no byte swapping happens here or in the
+ * devkit.
  */
 
 #include "detector.hpp"
@@ -20,6 +23,18 @@
 #include "dl_image_define.hpp"
 
 static constexpr const char *TAG = "detect";
+
+namespace {
+
+/* esp-dl takes the component order as part of the pixel type. */
+dl::image::pix_type_t to_espdl_pix_type(devkit::PixelOrder order)
+{
+    return (order == devkit::PixelOrder::BGR)
+               ? dl::image::DL_IMAGE_PIX_TYPE_BGR888
+               : dl::image::DL_IMAGE_PIX_TYPE_RGB888;
+}
+
+}  // namespace
 
 /* Static task resources (PSRAM-backed stack) */
 StackType_t  Detector::task_stack_[8 * 1024 / sizeof(StackType_t)]
@@ -59,16 +74,17 @@ Detector::~Detector()
  *  detect (synchronous)
  * ------------------------------------------------------------------------- */
 
-bool Detector::detect(const uint8_t *rgb888,
+bool Detector::detect(const uint8_t *pixels,
                       uint32_t      width,
                       uint32_t      height,
+                      devkit::PixelOrder order,
                       std::list<dl::detect::result_t> &results)
 {
     if (detect_ == nullptr) {
         ESP_LOGE(TAG, "Detector not initialised");
         return false;
     }
-    if (rgb888 == nullptr || width == 0 || height == 0) {
+    if (pixels == nullptr || width == 0 || height == 0) {
         ESP_LOGE(TAG, "No frame to analyse");
         return false;
     }
@@ -76,10 +92,10 @@ bool Detector::detect(const uint8_t *rgb888,
     int64_t t0 = esp_timer_get_time();
 
     dl::image::img_t img;
-    img.data     = const_cast<uint8_t *>(rgb888);
+    img.data     = const_cast<uint8_t *>(pixels);
     img.width    = static_cast<uint16_t>(width);
     img.height   = static_cast<uint16_t>(height);
-    img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
+    img.pix_type = to_espdl_pix_type(order);
 
     results = detect_->run(img);
 
@@ -101,9 +117,10 @@ bool Detector::detect(const uint8_t *rgb888,
  *  detect_async — launches inference in a dedicated FreeRTOS task
  * ------------------------------------------------------------------------- */
 
-bool Detector::detect_async(const uint8_t *rgb888,
+bool Detector::detect_async(const uint8_t *pixels,
                             uint32_t      width,
                             uint32_t      height,
+                            devkit::PixelOrder order,
                             result_cb_t   cb)
 {
     if (detect_ == nullptr) {
@@ -120,12 +137,13 @@ bool Detector::detect_async(const uint8_t *rgb888,
         ESP_LOGE(TAG, "OOM for frame copy (%u bytes)", (unsigned)fsz);
         return false;
     }
-    memcpy(fdup, rgb888, fsz);
+    memcpy(fdup, pixels, fsz);
 
     auto *arg = new (std::nothrow) infer_arg_t{
         .data   = fdup,
         .width  = width,
         .height = height,
+        .order  = order,
         .self   = this,
         .cb     = std::move(cb),
     };
@@ -160,7 +178,7 @@ void Detector::task_entry(void *arg)
     ESP_LOGI(TAG, "task started  t=%lld ms", (t_start / 1000));
 
     std::list<dl::detect::result_t> results;
-    bool ok = self->detect(ia->data, ia->width, ia->height, results);
+    bool ok = self->detect(ia->data, ia->width, ia->height, ia->order, results);
 
     int64_t t_inf = esp_timer_get_time();
     ESP_LOGI(TAG, "task done  ok=%d  detections=%u  t=%lld ms",

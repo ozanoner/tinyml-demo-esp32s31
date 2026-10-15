@@ -53,7 +53,8 @@ private:
  *  Public entry
  * ------------------------------------------------------------------------- */
 
-void ResultDisplay::show(const uint8_t *image,
+void ResultDisplay::show(devkit::Display *display,
+                         const uint8_t *image,
                          uint32_t      width,
                          uint32_t      height,
                          uint32_t      stride,
@@ -62,6 +63,10 @@ void ResultDisplay::show(const uint8_t *image,
                          const devkit::ResultLayout            &layout,
                          on_dismiss_cb_t on_dismiss)
 {
+    if (display == nullptr) {
+        ESP_LOGE(TAG, "no display handle — no result screen");
+        return;
+    }
     if (image == nullptr || image_bytes == 0) {
         ESP_LOGE(TAG, "no image to show");
         return;
@@ -96,12 +101,28 @@ void ResultDisplay::show(const uint8_t *image,
     };
     auto *ctx = new ctx_t{s_img_buf, width, height, stride, image_bytes,
                           results, layout, std::move(on_dismiss)};
-    lv_async_call([](void *arg) {
+
+    /* lv_async_call() allocates from LVGL's heap and links a node into LVGL's
+     * global timer list, so it races the LVGL task unless the lock is held
+     * (lvgl/src/misc/lv_async.c:45-66).  Only the hand-off needs the lock — the
+     * screen itself is built inside the LVGL task. */
+    if (!display->lock(-1)) {
+        ESP_LOGE(TAG, "could not take the LVGL lock — no result screen");
+        delete ctx;
+        return;
+    }
+    const lv_result_t res = lv_async_call([](void *arg) {
         auto *c = static_cast<ctx_t *>(arg);
         new ResultScreen(c->f, c->w, c->h, c->stride, c->bytes,
                          c->results, c->layout, std::move(c->cb));
         delete c;
     }, ctx);
+    display->unlock();
+
+    if (res != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "lv_async_call failed — no result screen");
+        delete ctx;
+    }
 }
 
 /* ---------------------------------------------------------------------------

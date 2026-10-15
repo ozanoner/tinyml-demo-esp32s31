@@ -45,11 +45,6 @@ static devkit::Audio   *g_audio   = nullptr;
 static devkit::Display *g_display = nullptr;
 static devkit::Camera  *g_camera  = nullptr;
 
-/* Packed RGB888 scratch for the detector, allocated once from the first frame's
- * geometry. The detector copies what it is given, so one buffer is enough. */
-static uint8_t *g_rgb      = nullptr;
-static size_t   g_rgb_size = 0;
-
 /* Persistent state display — survives app_main return.
  * Created by the splash dismiss callback so there is no blank frame. */
 static StateDisplay *g_state = nullptr;
@@ -64,27 +59,25 @@ static Detector *g_detector = nullptr;
 /* ---------------------------------------------------------------------------
  *  Return to command mode — callable from any task
  *
- * The detector completion callback runs in the inference task and LVGL is not
- * thread-safe, so the label write is marshalled onto the LVGL task with
- * lv_async_call().  Entering command mode is a flag plus a timer reset (safe
- * from any context) and is kept in the same callback so that what the screen
- * says and what the pipeline listens for change together.
+ * The detector completion callback runs in the inference task.  Both calls below
+ * are safe from there: StateDisplay::set_state() takes the LVGL lock itself and
+ * marshals the label write onto the LVGL task, and entering command mode is a
+ * flag plus a timer reset (voice_pipeline.hpp:96-99).  Doing it in that order
+ * keeps what the screen says and what the pipeline listens for in step.
  * ------------------------------------------------------------------------- */
 static void return_to_command_mode()
 {
-    lv_async_call([](void *) {
-        if (g_state != nullptr) {
-            g_state->set_state(STATE_COMMAND);
-        }
-        if (g_voice != nullptr) {
-            g_voice->enter_command_mode();
-        }
-    }, nullptr);
+    if (g_state != nullptr) {
+        g_state->set_state(STATE_COMMAND);
+    }
+    if (g_voice != nullptr) {
+        g_voice->enter_command_mode();
+    }
 }
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
-    g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
+    g_state = new (std::nothrow) StateDisplay(g_display, STATE_WAKEWORD);
     if (g_state == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate StateDisplay");
     }
@@ -242,61 +235,54 @@ extern "C" void app_main(void)
                      (unsigned long)frame.width, (unsigned long)frame.height,
                      (unsigned long)frame.stride, (unsigned long)frame.bytes);
 
-            /* Convert into the detector's input format. One scratch buffer,
-             * allocated from the first frame's geometry. */
-            const size_t rgb_bytes = devkit::Camera::rgb888_bytes(frame);
-            if (g_rgb == nullptr || g_rgb_size < rgb_bytes) {
-                if (g_rgb != nullptr) {
-                    heap_caps_free(g_rgb);
-                    g_rgb = nullptr;
-                }
-                g_rgb = static_cast<uint8_t *>(
-                    heap_caps_malloc(rgb_bytes, MALLOC_CAP_SPIRAM));
-                if (g_rgb == nullptr) {
-                    ESP_LOGE(TAG, "OOM for RGB888 frame (%lu bytes)",
-                             (unsigned long)rgb_bytes);
-                    if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
-                    return;
-                }
-                g_rgb_size = rgb_bytes;
-            }
+            /* One geometry for both converted images: the detector reports its
+             * boxes in the coordinates of the image it is given, and the result
+             * screen draws them 1:1 over the displayed image. The devkit owns
+             * both buffers and converts in hardware where it can. */
+            const devkit::ResultLayout layout = g_display->layout();
 
+            devkit::Image model_img{};
             const int64_t cvt_t0 = esp_timer_get_time();
-            ret = g_camera->to_rgb888(frame, g_rgb);
+            ret = g_camera->to_model_input(frame, (uint32_t)layout.img_w,
+                                          (uint32_t)layout.img_h, model_img);
             const int64_t cvt_t1 = esp_timer_get_time();
             if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "to_rgb888 failed: %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "to_model_input failed: %s", esp_err_to_name(ret));
                 if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
                 return;
             }
-            ESP_LOGI(TAG, "CVT:%lu ms", (unsigned long)((cvt_t1 - cvt_t0) / 1000));
+            ESP_LOGI(TAG, "CVT:%lu ms  %lux%lu",
+                     (unsigned long)((cvt_t1 - cvt_t0) / 1000),
+                     (unsigned long)model_img.width,
+                     (unsigned long)model_img.height);
 
             if (g_state != nullptr) g_state->set_state(STATE_ANALYSING);
 
             if (g_detector != nullptr) {
                 const bool started = g_detector->detect_async(
-                    g_rgb, frame.width, frame.height,
-                    [frame](const char * /*text*/,
-                            const std::list<dl::detect::result_t> &results) {
+                    model_img.data, model_img.width, model_img.height,
+                    model_img.order,
+                    [frame, layout](const char * /*text*/,
+                                    const std::list<dl::detect::result_t> &results) {
                         /* Analysis finished — leave "Analysing image..." and
                          * return to command mode while the result is on screen. */
                         return_to_command_mode();
 
-                        /* Show the frame the way this panel expects it. The
-                         * devkit writes into its own buffer and ResultDisplay
-                         * copies it synchronously. */
-                        const uint8_t *disp        = nullptr;
-                        uint32_t       stride      = 0;
-                        uint32_t       disp_bytes  = 0;
-                        if (g_camera->to_display(frame, disp, stride, disp_bytes)
-                                != ESP_OK) {
+                        /* Show the frame the way this panel expects it, at the
+                         * geometry the detector saw. The devkit writes into its
+                         * own buffer and ResultDisplay copies it synchronously. */
+                        devkit::Image disp_img{};
+                        if (g_camera->to_display(frame, (uint32_t)layout.img_w,
+                                                 (uint32_t)layout.img_h,
+                                                 disp_img) != ESP_OK) {
                             ESP_LOGE(TAG, "to_display failed — no result screen");
                             return;
                         }
 
-                        ResultDisplay::show(disp, frame.width, frame.height,
-                                            stride, disp_bytes, results,
-                                            g_display->layout(), []() {
+                        ResultDisplay::show(g_display,
+                                            disp_img.data, disp_img.width,
+                                            disp_img.height, disp_img.stride,
+                                            disp_img.bytes, results, layout, []() {
                             if (g_voice != nullptr) {
                                 g_voice->enter_command_mode();
                             }

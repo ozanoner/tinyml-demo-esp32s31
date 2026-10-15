@@ -25,6 +25,8 @@ namespace devkit {
 struct ResultLayout {
     int32_t img_x;    /**< camera image origin, x */
     int32_t img_y;    /**< camera image origin, y */
+    int32_t img_w;    /**< camera image width; the geometry handed to the detector */
+    int32_t img_h;    /**< camera image height */
     int32_t label_x;  /**< detection-label column, x */
     int32_t label_w;  /**< detection-label column width */
     int32_t hint_y;   /**< y of the dismiss hint */

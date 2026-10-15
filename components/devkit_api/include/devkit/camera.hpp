@@ -5,8 +5,15 @@
  *
  * The application never sees a device node, a V4L2 structure, a pixel format
  * enum from a vendor driver, or a byte-swap/flip decision. It captures a frame,
- * and asks the devkit to turn that frame into (a) packed RGB888 for the object
- * detector and (b) a display-ready image for the LCD.
+ * and asks the devkit to turn that frame into (a) the image the object detector
+ * consumes and (b) the image the LCD shows.
+ *
+ * Both converted images are produced at one shared geometry, requested by the
+ * caller: the detector reports its boxes in the coordinates of the image it was
+ * given, and the result screen draws them 1:1 over the displayed image, so the
+ * two must agree. A devkit that can scale in hardware (the ESP-Mosaico's PPA)
+ * produces exactly what was asked for; a devkit without a scaler produces the
+ * captured geometry and the detector resizes it itself.
  */
 
 #pragma once
@@ -26,6 +33,25 @@ enum class FrameFormat {
     RGB888,     /**< packed RGB888, 3 bytes per pixel */
 };
 
+/**
+ * Order of the three 8-bit colour components of a detector image — which one
+ * sits at the lowest address.
+ *
+ * Reported rather than fixed, because the two conversion paths genuinely
+ * disagree and neither is wrong: the PPA's 24-bit conversion mode stores the
+ * components B, G, R — PPA_SRM_COLOR_MODE_RGB888 is defined as
+ * ESP_COLOR_FOURCC_BGR24 (esp_hal_ppa/include/hal/ppa_types.h:50), and the BSP's
+ * own AI example hands that buffer to esp-dl as DL_IMAGE_PIX_TYPE_BGR888
+ * (examples/ai_model_gallery/main/app_main.cpp:311-316) — while a software
+ * conversion naturally writes R first. esp-dl consumes either
+ * (dl_image_define.hpp:10-13), so a devkit reports what its hardware produced
+ * and nothing pays for a byte swap.
+ */
+enum class PixelOrder {
+    RGB,  /**< R, G, B from the lowest address (software conversion) */
+    BGR,  /**< B, G, R from the lowest address (PPA 24-bit output) */
+};
+
 /** One captured frame. The pixel data stays owned by the devkit. */
 struct Frame {
     const uint8_t *data;  /**< pixel data; valid until the next capture() */
@@ -34,6 +60,21 @@ struct Frame {
     uint32_t stride;      /**< bytes per row */
     uint32_t bytes;       /**< total bytes of pixel data */
     FrameFormat format;   /**< how to interpret the pixel data */
+};
+
+/** A converted image, in a buffer owned by the devkit. */
+struct Image {
+    const uint8_t *data;  /**< pixel data; see the producing method for lifetime */
+    uint32_t width;       /**< pixels actually produced */
+    uint32_t height;      /**< pixels actually produced */
+    uint32_t stride;      /**< bytes per row */
+    uint32_t bytes;       /**< total bytes of pixel data */
+    /**
+     * Component order of the dark-to-light triplets.  Meaningful for the
+     * detector image (see PixelOrder); the display image is in the panel's own
+     * layout, which this does not describe.
+     */
+    PixelOrder order = PixelOrder::RGB;
 };
 
 class Camera {
@@ -55,33 +96,45 @@ public:
     virtual esp_err_t capture(Frame &out) = 0;
 
     /**
-     * @brief Convert a frame to packed RGB888.
+     * @brief Convert a frame into the image the object detector consumes.
      *
-     * @param[in]  src  frame to convert
-     * @param[out] dst  destination; must hold rgb888_bytes(src) bytes
+     * The image is three bytes per pixel, tightly packed — state width and
+     * height, and the row length is width * 3, with no padding, because esp-dl's
+     * img_t carries no stride.  A devkit that can scale produces exactly
+     * want_w x want_h; one that cannot produces the captured geometry, and
+     * `out.width`/`out.height` report which of the two happened, so the caller
+     * always knows the coordinate space of the results.  The component order is
+     * reported in `out.order`, since the hardware paths differ (see PixelOrder).
+     *
+     * The buffer is owned by this object and stays valid until the next call to
+     * to_model_input() (or to_display()); copy it if it must outlive that.
+     *
+     * @param[in]  src      frame to convert
+     * @param[in]  want_w   requested width  (the result-screen image width)
+     * @param[in]  want_h   requested height (the result-screen image height)
+     * @param[out] out      converted image
      */
-    virtual esp_err_t to_rgb888(const Frame &src, uint8_t *dst) = 0;
+    virtual esp_err_t to_model_input(const Frame &src, uint32_t want_w,
+                                     uint32_t want_h, Image &out) = 0;
 
     /**
      * @brief Convert a frame into an image the LCD can show directly.
      *
-     * The result is in the panel's native pixel format, laid out for LVGL
-     * (LV_COLOR_FORMAT_NATIVE). The buffer is owned by this object and stays
-     * valid until the next call to to_display(); copy it if it must outlive that.
+     * Same geometry contract as to_model_input(): the result screen draws the
+     * detector's boxes over this image unscaled, so it must be produced at the
+     * geometry the detector saw. The pixel format is the panel's native one,
+     * laid out for LVGL (LV_COLOR_FORMAT_NATIVE).
      *
-     * @param[in]  src     frame to convert
-     * @param[out] data    pointer to the converted image
-     * @param[out] stride  bytes per row of the converted image
-     * @param[out] bytes   total bytes of the converted image
+     * The buffer is owned by this object and stays valid until the next call to
+     * to_display() (or to_model_input()); copy it if it must outlive that.
+     *
+     * @param[in]  src      frame to convert
+     * @param[in]  want_w   requested width
+     * @param[in]  want_h   requested height
+     * @param[out] out      converted image
      */
-    virtual esp_err_t to_display(const Frame &src, const uint8_t *&data,
-                                 uint32_t &stride, uint32_t &bytes) = 0;
-
-    /** Bytes to_rgb888() writes for a frame of this geometry. */
-    static uint32_t rgb888_bytes(const Frame &src)
-    {
-        return src.width * src.height * 3u;
-    }
+    virtual esp_err_t to_display(const Frame &src, uint32_t want_w,
+                                 uint32_t want_h, Image &out) = 0;
 
 protected:
     Camera() = default;

@@ -6,11 +6,18 @@
  * created in the constructor and deleted in the destructor, so construction
  * and destruction must run in the LVGL task.
  *
- * Thread safety: LVGL is not thread-safe, so nothing here touches LVGL from
- * the caller's task.  set_state(), show_cmd() and show_temp() may be called
- * from ANY task — the label write is marshalled onto the LVGL task with
- * lv_async_call().  The countdown / auto-revert timer is an LVGL timer
- * (lv_timer_create), so its ticks run in the LVGL task as well; the
+ * Thread safety: LVGL is not thread-safe, and that includes lv_async_call()
+ * itself — it allocates from LVGL's heap and links a new node into LVGL's global
+ * timer list (lvgl/src/misc/lv_async.c:45-66).  Calling it unguarded while the
+ * LVGL task walks that list corrupts it, which is exactly how the ESP-Mosaico
+ * crashed (issue #35: lv_async_timer_cb dereferencing a smashed timer).  So
+ * every cross-task entry point here takes the display's LVGL lock around the
+ * hand-off, and the write itself runs in the LVGL task.
+ *
+ * set_state(), show_cmd() and show_temp() may be called from ANY task — they
+ * lock, marshal onto the LVGL task with lv_async_call(), and unlock.  The
+ * countdown / auto-revert timer is an LVGL timer (lv_timer_create), so its ticks
+ * already run in the LVGL task and write the label directly; the
  * countdown-completion callback is handed to the timer-service task so that
  * camera capture and inference never run inside the LVGL task.
  *
@@ -27,6 +34,8 @@
 #include "freertos/timers.h"
 #include "lvgl.h"
 
+namespace devkit { class Display; }
+
 /* ---- Canonical state strings for the voice-triggered camera pipeline ---- */
 
 static constexpr const char* STATE_WAKEWORD   = "Listening for wake word...";
@@ -41,9 +50,11 @@ public:
      * @brief Create the persistent state label on the default display.
      * MUST be called from the LVGL task.
      *
+     * @param display  the display whose LVGL lock guards the cross-task updates
+     *                 below.  Not owned; must outlive this object.
      * @param initial  initial state text (default: STATE_WAKEWORD)
      */
-    explicit StateDisplay(const char *initial = STATE_WAKEWORD);
+    explicit StateDisplay(devkit::Display *display, const char *initial = STATE_WAKEWORD);
 
     /** MUST be called from the LVGL task (deletes the label and the timer). */
     ~StateDisplay();
@@ -85,6 +96,7 @@ public:
     void show_temp(const char *text, uint32_t timeout_ms, const char *revert_to);
 
 private:
+    devkit::Display *display_;     /**< provides the LVGL lock (not owned) */
     lv_obj_t   *label_;        /**< state label  (owned) */
     lv_timer_t *timer_;        /**< countdown tick / auto-revert (LVGL timer) */
     int         countdown_;    /**< remaining countdown ticks (0 = none) */
@@ -99,6 +111,18 @@ private:
     /** Timer callback — advances the countdown or reverts the display.
      *  Runs in the LVGL task. */
     static void on_timer(lv_timer_t *t);
+
+    /** Take the display's LVGL lock, blocking.  False if it could not be taken,
+     *  in which case the caller must not touch LVGL or the pending text. */
+    bool lock_lvgl();
+
+    /** Release the display's LVGL lock. */
+    void unlock_lvgl();
+
+    /** Write @p text to the label immediately.  LVGL task only, and takes no
+     *  lock: it is the second half of set_state()'s hand-off, and the countdown /
+     *  revert ticks call it directly because they already run in the LVGL task. */
+    void write_now(const char *text);
 
     /** lv_async_call target: apply text_ to the label.  LVGL task. */
     static void apply_text(void *arg);

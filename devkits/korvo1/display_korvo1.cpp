@@ -74,6 +74,8 @@ public:
         return ResultLayout{
             .img_x = 280,
             .img_y = 120,
+            .img_w = 240,
+            .img_h = 240,
             .label_x = 540,
             .label_w = 240,
             .hint_y = 375,
