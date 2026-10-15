@@ -23,8 +23,10 @@ endif()
 #
 # esp_mm provides esp_cache_msync(), which the camera path needs to invalidate
 # the CPU cache over the driver's DMA-written capture buffer.
+# mosaico_module_camera is the component the camera path is built on: it owns
+# /dev/video2 and hands out the frames.
 idf_component_register(SRCS "board_mosaico.cpp"
                             "display_mosaico.cpp"
                             "audio_mosaico.cpp"
                             "camera_mosaico.cpp"
-                       REQUIRES devkit_api esp_mm)
+                       REQUIRES devkit_api esp_mm mosaico_module_camera)
