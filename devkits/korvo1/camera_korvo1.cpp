@@ -21,6 +21,7 @@
 
 #include "bsp/esp32_s31_korvo_1.h"
 #include "esp_video_device.h"
+#include "esp_video_ioctl.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -33,6 +34,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/poll.h>
+#include <sys/time.h>
 #include <linux/videodev2.h>
 
 namespace devkit {
@@ -46,6 +48,20 @@ constexpr const char *TAG = "camera";
 constexpr uint32_t FRAME_W   = 240;
 constexpr uint32_t FRAME_H   = 240;
 constexpr uint32_t FRAME_BPP = 2;
+
+/* Bound on the driver's dequeue wait.  Matches the poll() timeout in capture():
+ * the poll cannot gate DQBUF (the driver's VFS has no poll handler), so the
+ * wait has to be bounded in the driver itself — see the VIDIOC_S_DQBUF_TIMEOUT
+ * call in capture().
+ *
+ * KORVO1_DQBUF_TIMEOUT_MS allows a build to override it, so the failure path can
+ * be exercised on hardware without waiting for the intermittent stall
+ * (`idf.py -DKORVO1_DQBUF_TIMEOUT_MS=1 build` -> every capture must fail cleanly
+ * with the demo still alive).  Verification hook only; the shipped value is 500. */
+#ifndef KORVO1_DQBUF_TIMEOUT_MS
+#define KORVO1_DQBUF_TIMEOUT_MS 500
+#endif
+constexpr uint32_t DQBUF_TIMEOUT_MS = KORVO1_DQBUF_TIMEOUT_MS;
 
 /* One full frame per USERPTR slot. */
 constexpr int BUFFER_COUNT = 3;
@@ -115,6 +131,23 @@ public:
         if (fd < 0) {
             ESP_LOGE(TAG, "open(%s) failed: %s", dev_path, strerror(errno));
             return ESP_FAIL;
+        }
+
+        /* ---- 1b. Bound the driver's dequeue wait ------------------------
+         * DQBUF waits on dqbuf_timeout_ticks, which defaults to portMAX_DELAY
+         * (esp_video.c:574) and is consumed by esp_video_recv_element()
+         * (esp_video_ioctl.c:207-220).  The driver's VFS has no poll handler
+         * (esp_video_vfs.c:162-172) and cannot set O_NONBLOCK
+         * (esp_video_vfs.c:118-137), so the poll() in step 6 cannot gate the
+         * dequeue: without this, a capture that finds no frame never returns and
+         * the caller is stuck inside it for good (issue #36).  With it, DQBUF
+         * fails after DQBUF_TIMEOUT_MS and the caller reports a failed capture. */
+        struct timeval dqbuf_timeout;
+        dqbuf_timeout.tv_sec  = 0;
+        dqbuf_timeout.tv_usec = DQBUF_TIMEOUT_MS * 1000;
+        if (xioctl(fd, VIDIOC_S_DQBUF_TIMEOUT, &dqbuf_timeout) != 0) {
+            ESP_LOGW(TAG, "VIDIOC_S_DQBUF_TIMEOUT failed: %s — the dequeue wait "
+                          "stays unbounded", strerror(errno));
         }
 
         /* ---- 2. Get the default format, then S_FMT to force negotiation - */
