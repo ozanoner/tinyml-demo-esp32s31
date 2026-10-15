@@ -33,8 +33,15 @@ CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 # the USB Serial/JTAG D- pad, so the USB console cannot be used while the camera
 # is in the build. (examples/camera_lcd_preview/sdkconfig.defaults:6-14)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
-# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
+# The secondary console is a CHOICE whose default is the USB Serial/JTAG port
+# (esp_stdio/Kconfig:33-47), so a "# ... is not set" comment does NOT disable it —
+# only naming the other member does. Left as the default it keeps
+# ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y, which selects USJ_ENABLE_USB_SERIAL_JTAG
+# and drives GPIO33/34 — the pads the left camera module claims as D2/D3. The BSP's
+# own examples write the ineffective comment form and so carry the same bug.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
 # CONFIG_USJ_ENABLE_USB_SERIAL_JTAG is not set
 
 # BSP display + its LVGL adapter. The BSP's LVGL layer is esp_lvgl_adapter, which
@@ -50,6 +57,15 @@ CONFIG_CODEC_ES8311_SUPPORT=y
 # Camera module — discovers and claims the left slot, registers /dev/video2.
 # The module's own Kconfig selects the sensors and their modes.
 CONFIG_MOSAICO_MODULE_CAMERA=y
+
+# --- Diagnostic only (issue #35 bring-up), not part of the devkit's definition
+# A crash on this board is invisible: the console is UART and nothing is wired to
+# it. Store panics in flash instead, so they can be read out over esptool and
+# decoded against the build's ELF. Needs the coredump partition in
+# devkits/mosaico/partitions.csv. Flash core dumps are ELF format by design
+# (espcoredump/Kconfig:47 selects ESP_COREDUMP_DATA_FORMAT_ELF).
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+# CONFIG_ESP_COREDUMP_ENABLE_TO_NONE is not set
 # Default capture mode: the smallest UYVY mode the selected sensor offers, as the
 # BSP's own LCD-preview example uses
 # (examples/camera_lcd_preview/sdkconfig.defaults:22-25).
