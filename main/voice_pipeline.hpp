@@ -28,7 +28,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "esp_codec_dev.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
@@ -42,6 +41,8 @@ extern "C" {
 }
 #endif
 
+namespace devkit { class Audio; }
+
 class VoicePipeline final {
 public:
     using callback_t = std::function<void(const char *)>;
@@ -49,16 +50,18 @@ public:
     /**
      * @brief Construct the voice pipeline.
      *
-     * Initialises the AFE with dual-mic input at 16 kHz, loads WakeNet
-     * and MultiNet models from the "model" flash partition, registers
-     * speech commands from sdkconfig, and starts the feed + detect
-     * FreeRTOS tasks.
+     * Opens the microphone through the devkit's Audio interface (rate, channel
+     * count and gain are the devkit's own), loads WakeNet and MultiNet models
+     * from the "model" flash partition, registers speech commands from
+     * sdkconfig, and starts the feed + detect FreeRTOS tasks.
      *
+     * @param audio        devkit audio interface; must outlive this object
      * @param on_wakeword  called from detect task when wake word spotted
      * @param on_command   called from detect task when a command is detected
      * @param on_timeout   called from timer when 15 s expires without command
      */
-    VoicePipeline(callback_t on_wakeword,
+    VoicePipeline(devkit::Audio *audio,
+                  callback_t on_wakeword,
                   callback_t on_command,
                   callback_t on_timeout);
 
@@ -111,8 +114,13 @@ private:
     /* ---- Model list (loaded from flash, shared with detect task) ------ */
     srmodel_list_t           *models_;
 
-    /* ---- Microphone codec handle (shared with feed task) -------------- */
-    esp_codec_dev_handle_t mic_dev_;
+    /* ---- Devkit audio interface (microphone access) ------------------- */
+    devkit::Audio            *audio_;
+
+    /* ---- AFE microphone geometry -------------------------------------- */
+    /* Dual-mic AFE reports the wake word in two stages (DETECTED, then
+     * CHANNEL_VERIFIED); a single-mic devkit has no second stage. */
+    bool                      dual_mic_;
 
     /* ---- MultiNet ----------------------------------------------------- */
     const esp_mn_iface_t  *multinet_;
@@ -141,4 +149,7 @@ private:
     static void feed_task_fn(void *arg);
     static void detect_task_fn(void *arg);
     static void timeout_timer_fn(TimerHandle_t timer);
+
+    /** Command mode entry shared by both AFE wake-word paths. */
+    void enter_command_mode_on_wake();
 };

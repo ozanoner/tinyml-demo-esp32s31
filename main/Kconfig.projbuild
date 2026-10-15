@@ -15,6 +15,9 @@ menu "Devkit selection"
         config DEVKIT_KORVO1
             bool "ESP32-S31 Korvo-1"
 
+        config DEVKIT_MOSAICO
+            bool "ESP-Mosaico"
+
     endchoice
 
 endmenu

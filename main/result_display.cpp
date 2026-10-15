@@ -4,27 +4,35 @@
  *
  * All widgets on lv_scr_act() for proper theme font inheritance.
  * No explicit font set — inherits from LVGL theme.
+ *
+ * The image handed in is already in display form (devkit::Camera::to_display()
+ * produced it in the panel's native pixel format). It is copied into a static
+ * PSRAM buffer here because the screen is built asynchronously through
+ * lv_async_call(), and the camera reuses its own buffer on the next capture.
  */
 
 #include "result_display.hpp"
-#include "devkit.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 
+#include <cstdio>
 #include <cstring>
+#include <vector>
 
 static constexpr const char *TAG = "result";
 
-/* Single reusable PSRAM buffer for the raw frame — allocated once, avoids
- * heap fragmentation from per-capture alloc/free cycles. */
-static uint8_t *s_raw_buf   = nullptr;
-static size_t   s_raw_bytes = 0;
+/* Single reusable PSRAM buffer for the display-form image — allocated once,
+ * avoids heap fragmentation from per-capture alloc/free cycles. */
+static uint8_t *s_img_buf   = nullptr;
+static size_t   s_img_bytes = 0;
 
 class ResultScreen {
 public:
-    ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
+    ResultScreen(const uint8_t *image, uint32_t w, uint32_t h,
+                 uint32_t stride, uint32_t image_bytes,
                  const std::list<dl::detect::result_t> &results,
+                 const devkit::ResultLayout &layout,
                  ResultDisplay::on_dismiss_cb_t cb);
     ~ResultScreen();
     void dismiss();
@@ -35,7 +43,6 @@ private:
 
     lv_obj_t              *img_;
     lv_timer_t            *lv_timer_;
-    uint8_t               *swapped_;
     lv_img_dsc_t           img_dsc_;
     bool                   dismissed_;
     std::vector<lv_obj_t *> widgets_;
@@ -46,91 +53,108 @@ private:
  *  Public entry
  * ------------------------------------------------------------------------- */
 
-void ResultDisplay::show(const uint8_t *frame,
+void ResultDisplay::show(devkit::Display *display,
+                         const uint8_t *image,
                          uint32_t      width,
                          uint32_t      height,
+                         uint32_t      stride,
+                         uint32_t      image_bytes,
                          const std::list<dl::detect::result_t> &results,
+                         const devkit::ResultLayout            &layout,
                          on_dismiss_cb_t on_dismiss)
 {
-    /* Allocate static buffer on first use (one-shot, no fragmentation) */
-    size_t fsz = (size_t)width * height * 2;
-    if (s_raw_buf == nullptr) {
-        s_raw_buf = static_cast<uint8_t *>(
-            heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
-        s_raw_bytes = fsz;
-        if (s_raw_buf == nullptr) {
-            ESP_LOGE(TAG, "OOM for static raw buffer");
+    if (display == nullptr) {
+        ESP_LOGE(TAG, "no display handle — no result screen");
+        return;
+    }
+    if (image == nullptr || image_bytes == 0) {
+        ESP_LOGE(TAG, "no image to show");
+        return;
+    }
+
+    /* Static buffer, grown on demand (one-shot in practice: the geometry is
+     * fixed for the life of the build). */
+    if (s_img_buf == nullptr || s_img_bytes < image_bytes) {
+        if (s_img_buf != nullptr) {
+            heap_caps_free(s_img_buf);
+            s_img_buf = nullptr;
+            s_img_bytes = 0;
+        }
+        s_img_buf = static_cast<uint8_t *>(
+            heap_caps_malloc(image_bytes, MALLOC_CAP_SPIRAM));
+        if (s_img_buf == nullptr) {
+            ESP_LOGE(TAG, "OOM for display image (%lu bytes)",
+                     (unsigned long)image_bytes);
             return;
         }
+        s_img_bytes = image_bytes;
     }
-    memcpy(s_raw_buf, frame, fsz);  /* synchronous copy while data is alive */
+    /* Synchronous copy while the camera's buffer is still valid */
+    memcpy(s_img_buf, image, image_bytes);
 
     struct ctx_t {
-        uint8_t    *f; uint32_t w, h;
+        uint8_t    *f;
+        uint32_t    w, h, stride, bytes;
         std::list<dl::detect::result_t> results;
+        devkit::ResultLayout layout;
         on_dismiss_cb_t cb;
     };
-    auto *ctx = new ctx_t{s_raw_buf, width, height,
-                          results, std::move(on_dismiss)};
-    lv_async_call([](void *arg) {
+    auto *ctx = new ctx_t{s_img_buf, width, height, stride, image_bytes,
+                          results, layout, std::move(on_dismiss)};
+
+    /* lv_async_call() allocates from LVGL's heap and links a node into LVGL's
+     * global timer list, so it races the LVGL task unless the lock is held
+     * (lvgl/src/misc/lv_async.c:45-66).  Only the hand-off needs the lock — the
+     * screen itself is built inside the LVGL task. */
+    if (!display->lock(-1)) {
+        ESP_LOGE(TAG, "could not take the LVGL lock — no result screen");
+        delete ctx;
+        return;
+    }
+    const lv_result_t res = lv_async_call([](void *arg) {
         auto *c = static_cast<ctx_t *>(arg);
-        new ResultScreen(c->f, c->w, c->h, c->results, std::move(c->cb));
+        new ResultScreen(c->f, c->w, c->h, c->stride, c->bytes,
+                         c->results, c->layout, std::move(c->cb));
         delete c;
     }, ctx);
+    display->unlock();
+
+    if (res != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "lv_async_call failed — no result screen");
+        delete ctx;
+    }
 }
 
 /* ---------------------------------------------------------------------------
  *  Constructor
  * ------------------------------------------------------------------------- */
 
-ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
+ResultScreen::ResultScreen(const uint8_t *image, uint32_t w, uint32_t h,
+                           uint32_t stride, uint32_t image_bytes,
                            const std::list<dl::detect::result_t> &results,
+                           const devkit::ResultLayout &layout,
                            ResultDisplay::on_dismiss_cb_t cb)
-    : img_(nullptr), lv_timer_(nullptr), swapped_(nullptr),
+    : img_(nullptr), lv_timer_(nullptr),
       dismissed_(false), cb_(std::move(cb))
 {
-    /* Present the frame the way this devkit's camera delivers it: optional
-     * vertical flip and optional RGB565 BE -> LE byte swap. For a devkit that
-     * needs both, this produces byte-identical output to the previous code. */
-    const bool vflip = devkit::frame_vertical_flip();
-    const bool bswap = devkit::frame_byte_swap();
-
-    size_t npix = (size_t)w * h;
-    size_t rb   = (size_t)w * 2;
-    swapped_ = static_cast<uint8_t *>(
-        heap_caps_malloc(npix * 2, MALLOC_CAP_SPIRAM));
-    if (swapped_ == nullptr) {
-        ESP_LOGE(TAG, "OOM for frame buffer");
-        return;
-    }
-    for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *sr = frame + (vflip ? (h - 1 - y) : y) * rb;
-        uint8_t       *dr = swapped_ + y * rb;
-        if (bswap) {
-            for (uint32_t x = 0; x < w; x++) {
-                dr[x * 2]     = sr[x * 2 + 1];
-                dr[x * 2 + 1] = sr[x * 2];
-            }
-        } else {
-            memcpy(dr, sr, rb);
-        }
-    }
-    /* frame is the static s_raw_buf — do not free it */
-
-    /* Image descriptor */
+    /* Image descriptor over the static copy — the buffer outlives this screen
+     * (it is owned by ResultDisplay, and only one screen exists at a time). */
     memset(&img_dsc_, 0, sizeof(img_dsc_));
     img_dsc_.header.magic  = LV_IMAGE_HEADER_MAGIC;
     img_dsc_.header.cf     = LV_COLOR_FORMAT_NATIVE;
     img_dsc_.header.w      = (int32_t)w;
     img_dsc_.header.h      = (int32_t)h;
-    img_dsc_.header.stride = (int32_t)rb;
-    img_dsc_.data          = swapped_;
-    img_dsc_.data_size     = (uint32_t)(npix * 2);
+    img_dsc_.header.stride = (int32_t)stride;
+    img_dsc_.data          = const_cast<uint8_t *>(image);
+    img_dsc_.data_size     = image_bytes;
 
-    /* Layout */
-    constexpr int32_t IMG_X = 280, IMG_Y = 120;
-    constexpr int32_t LABEL_X = 540, LABEL_W = 240;
-    constexpr int32_t HINT_Y = 375;   /* below the image (IMG_Y + 240 = 360) */
+    /* Layout — placement comes from the devkit, so a different panel size or a
+     * different camera geometry needs no change in this file. */
+    const int32_t IMG_X   = layout.img_x;
+    const int32_t IMG_Y   = layout.img_y;
+    const int32_t LABEL_X = layout.label_x;
+    const int32_t LABEL_W = layout.label_w;
+    const int32_t HINT_Y  = layout.hint_y;
 
     lv_obj_t *parent = lv_scr_act();
 
@@ -191,10 +215,8 @@ ResultScreen::ResultScreen(const uint8_t *frame, uint32_t w, uint32_t h,
         widgets_.push_back(msg);
     }
 
-    /* Dismiss hint, centred under the camera image.  The image column is
-     * centred on the panel (280 + 240/2 = 400 = panel mid), so TOP_MID with no
-     * x offset centres the hint on the image.  No explicit font — inherits the
-     * theme like the other overlay labels. */
+    /* Dismiss hint, below the camera image and centred on the panel.  No
+     * explicit font — inherits the theme like the other overlay labels. */
     auto *hint = lv_label_create(parent);
     lv_label_set_text(hint, "Tap to close");
     lv_obj_set_style_text_color(hint, lv_color_white(), 0);
@@ -216,7 +238,6 @@ ResultScreen::~ResultScreen()
         if (w != nullptr) lv_obj_del(w);
     }
     widgets_.clear();
-    if (swapped_ != nullptr) heap_caps_free(swapped_);
 }
 
 void ResultScreen::dismiss()

@@ -23,7 +23,6 @@ extern "C" {
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
-#include "bsp/esp-bsp.h"
 }
 
 #include "lvgl.h"
@@ -32,13 +31,19 @@ extern "C" {
 #include <cstring>
 #include "splash.hpp"
 #include "state_display.hpp"
-#include "camera.hpp"
 #include "detector.hpp"
 #include "result_display.hpp"
 #include "voice_pipeline.hpp"
 #include "devkit.hpp"
 
 static constexpr const char* TAG = "app";
+
+/* Devkit interfaces — created before the first log line so the banner can name
+ * the board. Every device-specific value and mechanism lives behind them. */
+static devkit::Board   *g_board   = nullptr;
+static devkit::Audio   *g_audio   = nullptr;
+static devkit::Display *g_display = nullptr;
+static devkit::Camera  *g_camera  = nullptr;
 
 /* Persistent state display — survives app_main return.
  * Created by the splash dismiss callback so there is no blank frame. */
@@ -48,37 +53,31 @@ static StateDisplay *g_state = nullptr;
  * Created after splash dismissal, survives app_main return. */
 static VoicePipeline *g_voice = nullptr;
 
-/* Camera capture — owns the fixed PSRAM frame buffer.
- * Created after splash dismissal, before voice pipeline. */
-static Camera *g_camera = nullptr;
-
 /* COCO object detector — created after camera, runs inference on frames. */
 static Detector *g_detector = nullptr;
 
 /* ---------------------------------------------------------------------------
  *  Return to command mode — callable from any task
  *
- * The detector completion callback runs in the inference task and LVGL is not
- * thread-safe, so the label write is marshalled onto the LVGL task with
- * lv_async_call().  Entering command mode is a flag plus a timer reset (safe
- * from any context) and is kept in the same callback so that what the screen
- * says and what the pipeline listens for change together.
+ * The detector completion callback runs in the inference task.  Both calls below
+ * are safe from there: StateDisplay::set_state() takes the LVGL lock itself and
+ * marshals the label write onto the LVGL task, and entering command mode is a
+ * flag plus a timer reset (voice_pipeline.hpp:96-99).  Doing it in that order
+ * keeps what the screen says and what the pipeline listens for in step.
  * ------------------------------------------------------------------------- */
 static void return_to_command_mode()
 {
-    lv_async_call([](void *) {
-        if (g_state != nullptr) {
-            g_state->set_state(STATE_COMMAND);
-        }
-        if (g_voice != nullptr) {
-            g_voice->enter_command_mode();
-        }
-    }, nullptr);
+    if (g_state != nullptr) {
+        g_state->set_state(STATE_COMMAND);
+    }
+    if (g_voice != nullptr) {
+        g_voice->enter_command_mode();
+    }
 }
 
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
-    g_state = new (std::nothrow) StateDisplay(STATE_WAKEWORD);
+    g_state = new (std::nothrow) StateDisplay(g_display, STATE_WAKEWORD);
     if (g_state == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate StateDisplay");
     }
@@ -111,68 +110,22 @@ static void print_memory_summary(const char *label)
 }
 
 /* ---------------------------------------------------------------------------
- *  BSP initialisation helpers
+ *  Devkit bring-up
+ *
+ * The application holds the interfaces and drives them in a fixed order: the
+ * board's shared resources first (the I2C bus carries both the codec and the
+ * touch controller), then audio, then the display.
  * ------------------------------------------------------------------------- */
 
-static esp_err_t init_bsp_i2c(void)
+static void create_devkit_interfaces()
 {
-    ESP_LOGI(TAG, "BSP I2C init...");
-    esp_err_t ret = bsp_i2c_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_i2c_init failed: %s", esp_err_to_name(ret));
+    g_board   = devkit::Board::create();
+    g_audio   = devkit::Audio::create();
+    g_display = devkit::Display::create();
+
+    if (g_board == nullptr || g_audio == nullptr || g_display == nullptr) {
+        ESP_LOGE(TAG, "Failed to create the devkit interfaces");
     }
-    return ret;
-}
-
-static esp_err_t init_bsp_audio(void)
-{
-    ESP_LOGI(TAG, "BSP audio init...");
-    esp_err_t ret = bsp_audio_init(NULL);   /* NULL = default I2S config */
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_audio_init failed: %s", esp_err_to_name(ret));
-    }
-    return ret;
-}
-
-static esp_err_t init_bsp_display(void)
-{
-    ESP_LOGI(TAG, "BSP display + LVGL init...");
-
-    const bsp_display_cfg_t disp_cfg = {
-        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = devkit::lcd_h_res() * devkit::lcd_draw_buf_height(),
-        .double_buffer = devkit::lcd_draw_buf_double(),
-        .flags = {
-            .buff_dma = false,
-            .buff_spiram = true,
-            .sw_rotate = false,
-        }
-    };
-
-    lv_display_t *disp = bsp_display_start_with_config(&disp_cfg);
-    if (disp == NULL) {
-        ESP_LOGE(TAG, "bsp_display_start_with_config returned NULL");
-        return ESP_FAIL;
-    }
-
-    /* Backlight — best-effort (NOT_SUPPORTED is expected on this board). */
-    esp_err_t ret = bsp_display_backlight_on();
-    if (ret != ESP_OK && ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGE(TAG, "bsp_display_backlight_on failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    return ESP_OK;
-}
-
-static esp_err_t init_bsp_camera(void)
-{
-    ESP_LOGI(TAG, "BSP camera init...");
-    esp_err_t ret = bsp_camera_start(NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_camera_start failed: %s", esp_err_to_name(ret));
-    }
-    return ret;
 }
 
 /* ---------------------------------------------------------------------------
@@ -181,12 +134,18 @@ static esp_err_t init_bsp_camera(void)
 
 extern "C" void app_main(void)
 {
+    /* ---- Devkit interfaces (needed for the banner) ---- */
+    create_devkit_interfaces();
+    if (g_board == nullptr || g_audio == nullptr || g_display == nullptr) {
+        return;
+    }
+
     /* ---- Chip info banner ---- */
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, "  TinyML Demo \u2014 %s", devkit::name());
+    ESP_LOGI(TAG, "  TinyML Demo \u2014 %s", g_board->name());
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, "Chip:         ESP32-S31");
     ESP_LOGI(TAG, "Cores:        %d", chip_info.cores);
@@ -197,20 +156,25 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "================================================");
 
     /* ---- Peripheral init (fatal on failure) ---- */
-    ESP_ERROR_CHECK(init_bsp_i2c());
+    ESP_ERROR_CHECK(g_board->init());
     print_memory_summary("I2C");
 
-    ESP_ERROR_CHECK(init_bsp_audio());
+    ESP_ERROR_CHECK(g_audio->init());
     print_memory_summary("AUDIO");
 
-    ESP_ERROR_CHECK(init_bsp_display());
+    ESP_ERROR_CHECK(g_display->init());
+    ESP_ERROR_CHECK(g_display->backlight_on());
     print_memory_summary("DISPLAY+LVGL");
 
-    ESP_ERROR_CHECK(init_bsp_camera());
+    /* ---- Camera (sensor bring-up + PSRAM frame buffers) ---- */
+    g_camera = devkit::Camera::create();
+    if (g_camera == nullptr || !g_camera->is_ok()) {
+        ESP_LOGE(TAG, "Camera init failed — frames will not be captured");
+    }
     print_memory_summary("CAMERA");
 
     /* ---- Splash screen ---- */
-    if (!bsp_display_lock(0)) {
+    if (!g_display->lock(0)) {
         ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
     } else {
         Splash splash(
@@ -218,7 +182,7 @@ extern "C" void app_main(void)
                       "Tap anywhere to skip",
                       5000,
                       on_splash_dismissed);
-        bsp_display_unlock();
+        g_display->unlock();
 
         while (splash.is_active()) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -226,13 +190,6 @@ extern "C" void app_main(void)
     }
 
     ESP_LOGI(TAG, "Initialisation complete. State: \"%s\"", STATE_WAKEWORD);
-
-    /* ---- Camera (pre-allocates PSRAM frame buffer) -------------------- */
-    g_camera = new (std::nothrow) Camera();
-    if (g_camera != nullptr && !g_camera->is_ok()) {
-        ESP_LOGE(TAG, "Camera init failed — frames will not be captured");
-    }
-    print_memory_summary("CAMERA");
 
     /* ---- Object detector (COCO YOLO11n via ESP-DL) -------------------- */
     g_detector = new (std::nothrow) Detector();
@@ -266,36 +223,66 @@ extern "C" void app_main(void)
                 return;
             }
 
-            camera_frame_t frame;
-            esp_err_t ret = g_camera->capture_frame(frame);
+            devkit::Frame frame;
+            esp_err_t ret = g_camera->capture(frame);
             if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "capture_frame failed: %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "capture failed: %s", esp_err_to_name(ret));
                 if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
                 return;
             }
 
-            ESP_LOGI(TAG, "Frame: %" PRIu32 "x%" PRIu32
-                          "  stride=%" PRIu32 "  fmt=0x%08" PRIx32,
-                     frame.width, frame.height,
-                     frame.stride, frame.pixel_format);
+            ESP_LOGI(TAG, "Frame: %lux%lu  stride=%lu  bytes=%lu",
+                     (unsigned long)frame.width, (unsigned long)frame.height,
+                     (unsigned long)frame.stride, (unsigned long)frame.bytes);
+
+            /* One geometry for both converted images: the detector reports its
+             * boxes in the coordinates of the image it is given, and the result
+             * screen draws them 1:1 over the displayed image. The devkit owns
+             * both buffers and converts in hardware where it can. */
+            const devkit::ResultLayout layout = g_display->layout();
+
+            devkit::Image model_img{};
+            const int64_t cvt_t0 = esp_timer_get_time();
+            ret = g_camera->to_model_input(frame, (uint32_t)layout.img_w,
+                                          (uint32_t)layout.img_h, model_img);
+            const int64_t cvt_t1 = esp_timer_get_time();
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "to_model_input failed: %s", esp_err_to_name(ret));
+                if (g_state != nullptr) g_state->set_state(STATE_WAKEWORD);
+                return;
+            }
+            ESP_LOGI(TAG, "CVT:%lu ms  %lux%lu",
+                     (unsigned long)((cvt_t1 - cvt_t0) / 1000),
+                     (unsigned long)model_img.width,
+                     (unsigned long)model_img.height);
 
             if (g_state != nullptr) g_state->set_state(STATE_ANALYSING);
 
             if (g_detector != nullptr) {
                 const bool started = g_detector->detect_async(
-                    frame.data, frame.width, frame.height,
-                    [w = frame.width, h = frame.height,
-                     data = frame.data](
-                        const char * /*text*/,
-                        const std::list<dl::detect::result_t> &results) {
+                    model_img.data, model_img.width, model_img.height,
+                    model_img.order,
+                    [frame, layout](const char * /*text*/,
+                                    const std::list<dl::detect::result_t> &results) {
                         /* Analysis finished — leave "Analysing image..." and
                          * return to command mode while the result is on screen. */
                         return_to_command_mode();
 
-                        /* Frame data still alive — camera owns it, detect
-                         * hasn't freed its copy yet.  ResultDisplay copies
-                         * into its static buffer synchronously. */
-                        ResultDisplay::show(data, w, h, results, []() {
+                        /* Show the frame the way this panel expects it, at the
+                         * geometry the detector saw. The devkit writes into its
+                         * own buffer and ResultDisplay copies it synchronously. */
+                        devkit::Image disp_img{};
+                        if (g_camera->to_display(frame, (uint32_t)layout.img_w,
+                                                 (uint32_t)layout.img_h,
+                                                 disp_img) != ESP_OK) {
+                            ESP_LOGE(TAG, "to_display failed — no result screen");
+                            return;
+                        }
+
+                        ResultDisplay::show(g_display,
+                                            disp_img.data, disp_img.width,
+                                            disp_img.height, disp_img.stride,
+                                            disp_img.bytes, results, layout, []() {
                             if (g_voice != nullptr) {
                                 g_voice->enter_command_mode();
                             }
@@ -319,7 +306,8 @@ extern "C" void app_main(void)
         }
     };
 
-    g_voice = new (std::nothrow) VoicePipeline(std::move(on_wakeword),
+    g_voice = new (std::nothrow) VoicePipeline(g_audio,
+                                               std::move(on_wakeword),
                                                std::move(on_command),
                                                std::move(on_timeout));
     if (g_voice == nullptr) {

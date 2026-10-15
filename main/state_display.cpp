@@ -6,16 +6,21 @@
  * screen.  The background colour is preserved from the splash screen so
  * there is no visual flash at transition.
  *
- * Threading: LVGL is not thread-safe, so this class never touches LVGL from
- * the caller's task.  Label writes issued by other tasks (voice pipeline,
- * inference callback, error paths) are marshalled onto the LVGL task with
- * lv_async_call(), and the countdown / auto-revert ticks come from an LVGL
- * timer, so they run in the LVGL task too.  The countdown-completion callback
+ * Threading: LVGL is not thread-safe, and neither is lv_async_call() — it
+ * allocates from LVGL's heap and links a node into LVGL's global timer list
+ * (lvgl/src/misc/lv_async.c:45-66), so calling it unguarded while the LVGL task
+ * walks that list corrupts it.  Label writes issued by other tasks (voice
+ * pipeline, inference callback, error paths) therefore take the display's LVGL
+ * lock around the hand-off and marshal onto the LVGL task with lv_async_call().
+ * The countdown / auto-revert ticks come from an LVGL timer, so they run in the
+ * LVGL task and write the label directly.  The countdown-completion callback
  * does camera capture and starts inference — that is handed to the
  * timer-service task so it can never block LVGL.
  */
 
 #include "state_display.hpp"
+
+#include "devkit/display.hpp"
 #include "esp_log.h"
 
 static constexpr const char *TAG = "state";
@@ -35,8 +40,9 @@ const lv_color_t StateDisplay::BG = lv_color_hex(0x1a1a2e);
 //  Construction  —  MUST run in the LVGL task
 // ---------------------------------------------------------------------------
 
-StateDisplay::StateDisplay(const char *initial)
-    : label_(nullptr)
+StateDisplay::StateDisplay(devkit::Display *display, const char *initial)
+    : display_(display)
+    , label_(nullptr)
     , timer_(nullptr)
     , countdown_(0)
     , period_ms_(REVERT_MS)
@@ -107,11 +113,16 @@ void StateDisplay::set_state(const char *text)
         return;
     }
 
+    /* The hand-off is guarded from here on: lv_async_call() itself mutates
+     * LVGL's heap and timer list, and text_ is read back in the LVGL task. */
+    if (!lock_lvgl()) return;
+
     /* Keep our own copy — callers pass stack buffers and the write below runs
      * later, in the LVGL task. */
     snprintf(text_, sizeof(text_), "%s", text);
     ESP_LOGI(TAG, "State: %s", text_);
-    lv_async_call(apply_text, this);
+    (void)lv_async_call(apply_text, this);
+    unlock_lvgl();
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +137,9 @@ void StateDisplay::show_cmd(const char *cmd)
         return;
     }
 
+    /* Also guards countdown_/period_ms_, which the LVGL task reads. */
+    if (!lock_lvgl()) return;
+
     if (strcmp(cmd, "cheese") == 0) {
         /* Start countdown: cheese 3... → cheese 2... → cheese 1... */
         countdown_ = COUNTDOWN_START;
@@ -139,7 +153,8 @@ void StateDisplay::show_cmd(const char *cmd)
     }
 
     ESP_LOGI(TAG, "State: %s", text_);
-    lv_async_call(apply_show_cmd, this);
+    (void)lv_async_call(apply_show_cmd, this);
+    unlock_lvgl();
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +166,9 @@ void StateDisplay::show_temp(const char *text, uint32_t timeout_ms, const char *
     if (text == nullptr) return;
     if (label_ == nullptr) return;
 
+    /* Guards revert_to_/countdown_cb_, which the LVGL task reads. */
+    if (!lock_lvgl()) return;
+
     revert_to_ = (revert_to != nullptr) ? revert_to : STATE_COMMAND;
     countdown_ = 0;
     countdown_cb_ = nullptr;  /* cancel any pending countdown action */
@@ -160,7 +178,8 @@ void StateDisplay::show_temp(const char *text, uint32_t timeout_ms, const char *
              text_, timeout_ms, revert_to_);
 
     period_ms_ = timeout_ms;
-    lv_async_call(apply_show_cmd, this);
+    (void)lv_async_call(apply_show_cmd, this);
+    unlock_lvgl();
 }
 
 // ---------------------------------------------------------------------------
@@ -198,22 +217,51 @@ void StateDisplay::on_timer(lv_timer_t *t)
         if (self->countdown_cb_) {
             if (xTimerPendFunctionCall(run_countdown_cb, self, 0, 0) != pdPASS) {
                 ESP_LOGE(TAG, "xTimerPendFunctionCall failed — reverting display");
-                self->set_state(STATE_COMMAND);
+                self->write_now(STATE_COMMAND);   /* already in the LVGL task */
             }
         } else {
-            self->set_state(STATE_COMMAND);
+            self->write_now(STATE_COMMAND);
         }
     } else {
         /* No countdown — revert to the stored target and stop. */
         self->countdown_ = 0;
         lv_timer_pause(t);
-        self->set_state(self->revert_to_);
+        self->write_now(self->revert_to_);
     }
 }
 
 // ---------------------------------------------------------------------------
 //  Private — LVGL task helpers
 // ---------------------------------------------------------------------------
+
+bool StateDisplay::lock_lvgl()
+{
+    if (display_ == nullptr) {
+        ESP_LOGE(TAG, "no display handle — cannot guard the LVGL hand-off");
+        return false;
+    }
+    if (!display_->lock(-1)) {
+        ESP_LOGE(TAG, "could not take the LVGL lock — state not updated");
+        return false;
+    }
+    return true;
+}
+
+void StateDisplay::unlock_lvgl()
+{
+    if (display_ != nullptr) {
+        display_->unlock();
+    }
+}
+
+void StateDisplay::write_now(const char *text)
+{
+    snprintf(text_, sizeof(text_), "%s", text);
+    ESP_LOGI(TAG, "State: %s", text_);
+    if (label_ != nullptr) {
+        lv_label_set_text(label_, text_);
+    }
+}
 
 void StateDisplay::apply_text(void *arg)
 {
