@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "korvo1",
+      "displayName": "ESP32-S31 Korvo-1",
+      "description": "Builds the Korvo-1 devkit in build/korvo1, with build/korvo1/sdkconfig.",
+      "binaryDir": "build/korvo1",
+      "environment": {
+        "DEVKIT": "korvo1"
+      },
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s31",
+        "SDKCONFIG": "./build/korvo1/sdkconfig",
+        "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;devkits/korvo1/sdkconfig.defaults"
+      }
+    },
+    {
+      "name": "mosaico",
+      "displayName": "ESP-Mosaico",
+      "description": "Builds the ESP-Mosaico devkit in build/mosaico, with build/mosaico/sdkconfig.",
+      "binaryDir": "build/mosaico",
+      "environment": {
+        "DEVKIT": "mosaico"
+      },
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s31",
+        "SDKCONFIG": "./build/mosaico/sdkconfig",
+        "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;devkits/mosaico/sdkconfig.defaults"
+      }
+    }
+  ]
+}

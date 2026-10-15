@@ -1,10 +1,10 @@
 # ESP32-S31 Korvo-1 — devkit-specific settings.
 #
 # Applied after the project-root sdkconfig.defaults (later file wins). Wired in
-# the top-level CMakeLists.txt through SDKCONFIG_DEFAULTS, which names this file
-# explicitly — IDF does not auto-load a defaults file with this name.
+# CMakePresets.json, whose korvo1 preset names this file in SDKCONFIG_DEFAULTS —
+# IDF does not auto-load a defaults file with this name.
 
-# Selected devkit — must match the DEVKIT environment variable used to build.
+# Selected devkit — must match the DEVKIT the devkit preset sets.
 CONFIG_DEVKIT_KORVO1=y
 
 # Custom partition table — this devkit's own layout.

@@ -1,18 +1,24 @@
 # ESP-Mosaico devkit component.
 #
-# The top-level CMakeLists.txt adds devkits/<DEVKIT> to EXTRA_COMPONENT_DIRS, so
-# this component is in the build only when mosaico is the selected devkit. The
-# guard below turns a wiring mistake into a clear error instead of a build whose
-# configuration does not match the devkit that is actually present.
+# Both devkit directories are always in the build (see the top-level
+# CMakeLists.txt), which is what keeps the component manager's manifest set, and
+# with it the dependency solution, the union of both devkits'.  Only the devkit
+# the preset selects is compiled, so this component's sources are built in a
+# mosaico build and left alone in a korvo1 one.
+#
+# The guard below turns a wiring mistake into a clear error instead of a build
+# whose configuration does not match the devkit that is actually present: it
+# fires when mosaico is the selected devkit while the configuration selects
+# another one, i.e. a preset and an sdkconfig that disagree.
 #
 # Skipped during IDF's early-expansion pass, where no CONFIG_* value exists yet
 # (see main/CMakeLists.txt for the explanation).
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    if(NOT CONFIG_DEVKIT_MOSAICO)
+    if("$ENV{DEVKIT}" STREQUAL "mosaico" AND NOT CONFIG_DEVKIT_MOSAICO)
         message(FATAL_ERROR
-            "devkits/mosaico is in the build but CONFIG_DEVKIT_MOSAICO is not set. "
-            "Build with DEVKIT=mosaico, and delete a stale sdkconfig if you just "
-            "switched devkits.")
+            "The mosaico preset is selected but CONFIG_DEVKIT_MOSAICO is not set — the "
+            "preset and build/mosaico/sdkconfig disagree. Delete "
+            "build/mosaico/sdkconfig and build with 'idf.py --preset mosaico build'.")
     endif()
 endif()
 

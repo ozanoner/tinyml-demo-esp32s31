@@ -92,23 +92,37 @@ partition).
 ### Build (inside devcontainer)
 
 The project includes a `.devcontainer` with the correct ESP-IDF version.
-Inside the container:
+
+One CMake preset per devkit selects the devkit, its build directory and its
+sdkconfig, so the two devkits build independently — neither build touches the
+other's directory:
 
 ```bash
 cd /project
-DEVKIT=korvo1 idf.py --preview set-target esp32s31
-DEVKIT=korvo1 idf.py build
+idf.py --preset korvo1 build     # -> build/korvo1/tinyml-demo-esp32s31.bin
+idf.py --preset mosaico build    # -> build/mosaico/tinyml-demo-esp32s31.bin
 ```
+
+There is no separate `set-target` step and no `DEVKIT` variable to set: each
+preset carries the chip target (`esp32s31` in both) and its own
+`build/<devkit>/sdkconfig`.
+
+Both devkit directories stay in the build, so one dependency solution covers
+both. Two components cannot be satisfied by a single version — `esp_video`
+(Korvo BSP `~2.2` vs the ESP-Mosaico camera module `^2.4.1`) and `esp_codec_dev`
+(Korvo BSP `~1.5` vs the ESP-Mosaico BSP `~1.6`) — and are resolved by `overrides`
+in `main/idf_component.yml`, which names the version and the reason for each.
 
 ### Flash (app partition only)
 
-The application image is at offset `0x10000`.  Flash baud rate up to 921600:
+The application image is at offset `0x10000`, in the selected devkit's build
+directory.  Flash baud rate up to 921600:
 
 ```bash
 esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
-  0x10000 build/tinyml-demo-esp32s31.bin
+  0x10000 build/korvo1/tinyml-demo-esp32s31.bin
 ```
 
 ### Run the demo

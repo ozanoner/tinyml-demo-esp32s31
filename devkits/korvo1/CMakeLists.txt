@@ -1,18 +1,24 @@
 # ESP32-S31 Korvo-1 devkit component.
 #
-# The top-level CMakeLists.txt adds devkits/<DEVKIT> to EXTRA_COMPONENT_DIRS, so
-# this component is in the build only when korvo1 is the selected devkit. The
-# guard below turns a wiring mistake into a clear error instead of a build whose
-# configuration does not match the devkit that is actually present.
+# Both devkit directories are always in the build (see the top-level
+# CMakeLists.txt), which is what keeps the component manager's manifest set, and
+# with it the dependency solution, the union of both devkits'.  Only the devkit
+# the preset selects is compiled, so this component's sources are built in a
+# korvo1 build and left alone in a mosaico one.
+#
+# The guard below turns a wiring mistake into a clear error instead of a build
+# whose configuration does not match the devkit that is actually present: it
+# fires when korvo1 is the selected devkit while the configuration selects
+# another one, i.e. a preset and an sdkconfig that disagree.
 #
 # Skipped during IDF's early-expansion pass, where no CONFIG_* value exists yet
 # (see main/CMakeLists.txt for the explanation).
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    if(NOT CONFIG_DEVKIT_KORVO1)
+    if("$ENV{DEVKIT}" STREQUAL "korvo1" AND NOT CONFIG_DEVKIT_KORVO1)
         message(FATAL_ERROR
-            "devkits/korvo1 is in the build but CONFIG_DEVKIT_KORVO1 is not set. "
-            "Build with DEVKIT=korvo1, and delete a stale sdkconfig if you just "
-            "switched devkits.")
+            "The korvo1 preset is selected but CONFIG_DEVKIT_KORVO1 is not set — the "
+            "preset and build/korvo1/sdkconfig disagree. Delete "
+            "build/korvo1/sdkconfig and build with 'idf.py --preset korvo1 build'.")
     endif()
 endif()
 
@@ -54,9 +60,13 @@ endif()
 # It never fails the build: with no git, or a read-only/packaged IDF tree, the
 # build continues on the stock driver and warns.
 #
-# It runs at configure time, so a build reusing an already-configured build/
-# directory does not re-apply it.  The documented flow (delete sdkconfig, then
-# set-target, then build) reconfigures, and therefore always applies it.
+# It runs at configure time, so it is applied whenever cmake configures this
+# build directory — the first build with it (idf.py --preset korvo1 build) and
+# every explicit reconfigure.  A build that reuses an already-configured
+# directory runs ninja without configuring, so it does not re-apply the patch;
+# that is safe for incremental work, but when the IDF tree itself has been
+# replaced (a new container) and driver objects have to be rebuilt, configure
+# first: idf.py --preset korvo1 reconfigure build.
 set(KORVO1_IDF_PATCH "${CMAKE_CURRENT_LIST_DIR}/patches/esp-idf-dvp-frame-capture-stability.patch")
 find_program(KORVO1_GIT git)
 
