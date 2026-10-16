@@ -154,6 +154,27 @@ MainScreen::MainScreen(devkit::Display *display,
     lv_obj_set_style_text_align(message_lbl_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(message_lbl_, "");
 
+    /* The image's own directive line ("tap to clear"). Directly on the screen and
+     * not inside the message row: it belongs to the picture and is left-aligned
+     * with it. Hidden while there is no image. No timer hides it — it stays until
+     * a tap or the next "cheese" clears the image (issue #43).
+     *
+     * Created BEFORE the layout pass below, not after it. apply_layout() is what
+     * positions this widget, it runs exactly once here, and its only other call
+     * site fires when the produced frame geometry differs from what the screen was
+     * laid out for — which on both devkits never happens. A widget created after
+     * this point therefore keeps LVGL's default position, (0,0), for the rest of
+     * the session: that is issue #43's "tap to clear" sitting in the panel's
+     * top-left corner instead of under the picture. */
+    image_dir_lbl_ = lv_label_create(scr);
+    lv_label_set_text(image_dir_lbl_, ui::text::kTapToClear);
+    lv_obj_set_style_text_font(image_dir_lbl_, ui::font::message(), 0);
+    lv_obj_set_style_text_color(image_dir_lbl_, lv_color_hex(ui::color::kMuted), 0);
+    /* Left-aligned with the picture's left edge, as the requirement states —
+     * explicit, not left to the theme's default for a label with a set width. */
+    lv_obj_set_style_text_align(image_dir_lbl_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_add_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
+
     /* Place everything. The frame geometry here is what the camera reports it
      * produces, so the placeholder is the frame's box before any capture. */
     apply_layout(static_cast<int32_t>(frame_w), static_cast<int32_t>(frame_h));
@@ -167,16 +188,6 @@ MainScreen::MainScreen(devkit::Display *display,
     } else {
         lv_timer_pause(timer_);
     }
-
-    /* The image's own directive line ("tap to clear"). Directly on the screen and
-     * not inside the message row: it belongs to the picture and is left-aligned
-     * with it. Hidden while there is no image. No timer hides it — it stays until
-     * a tap or the next "cheese" clears the image (issue #43). */
-    image_dir_lbl_ = lv_label_create(scr);
-    lv_label_set_text(image_dir_lbl_, ui::text::kTapToClear);
-    lv_obj_set_style_text_font(image_dir_lbl_, ui::font::message(), 0);
-    lv_obj_set_style_text_color(image_dir_lbl_, lv_color_hex(ui::color::kMuted), 0);
-    lv_obj_add_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
 
     snprintf(status_, sizeof(status_), "%s", ui::text::kStateWakeWord);
 
@@ -265,6 +276,20 @@ void MainScreen::apply_layout(int32_t frame_w, int32_t frame_h)
         const int32_t line_h = lv_font_get_line_height(ui::font::message());
         lv_obj_set_pos(image_dir_lbl_, layout_.image_dir.x, layout_.image_dir.y);
         lv_obj_set_width(image_dir_lbl_, layout_.image_dir.w);
+        /* Resolve the position before reading it back: lv_obj_get_x() returns
+         * obj->coords.x1 (lv_obj_pos.c:573-587), which the *layout pass* computes —
+         * not the value lv_obj_set_pos() just wrote. Without this call the read-back
+         * reports (0,0) whatever the position is, and a widget created after the last
+         * layout pass really does keep (0,0) for the whole session. That was issue
+         * #43: "tap to clear" in the panel's top-left corner. These coordinates are
+         * that regression's signature in the boot log. */
+        lv_obj_update_layout(image_dir_lbl_);
+        ESP_LOGI(TAG, "Image line: '%s' at (%ld,%ld) w=%ld  picture (%ld,%ld %ldx%ld)",
+                 ui::text::kTapToClear,
+                 (long)lv_obj_get_x(image_dir_lbl_), (long)lv_obj_get_y(image_dir_lbl_),
+                 (long)lv_obj_get_width(image_dir_lbl_),
+                 (long)layout_.picture.x, (long)layout_.picture.y,
+                 (long)layout_.picture.w, (long)layout_.picture.h);
         if (layout_.image_dir.y + line_h > layout_.divider_y) {
             ESP_LOGW(TAG, "Image directive line at y=%ld (+%ld) would cross the divider "
                           "at y=%ld", (long)layout_.image_dir.y, (long)line_h,

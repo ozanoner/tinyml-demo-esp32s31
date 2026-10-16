@@ -77,11 +77,13 @@ Layout compute_layout(int32_t panel_w, int32_t panel_h, int32_t img_w, int32_t i
     }
 
     ESP_LOGI(TAG, "panel %ldx%ld  frame %ldx%ld  ->  picture (%ld,%ld %ldx%ld)  "
-                  "list (%ld,%ld %ldx%ld)  message (%ld,%ld %ldx%ld)  divider y=%ld",
+                  "list (%ld,%ld %ldx%ld)  message (%ld,%ld %ldx%ld)  "
+                  "image line (%ld,%ld w=%ld)  divider y=%ld",
              (long)panel_w, (long)panel_h, (long)img_w, (long)img_h,
              (long)l.picture.x, (long)l.picture.y, (long)l.picture.w, (long)l.picture.h,
              (long)l.list.x, (long)l.list.y, (long)l.list.w, (long)l.list.h,
              (long)l.message.x, (long)l.message.y, (long)l.message.w, (long)l.message.h,
+             (long)l.image_dir.x, (long)l.image_dir.y, (long)l.image_dir.w,
              (long)l.divider_y);
 
     return l;
