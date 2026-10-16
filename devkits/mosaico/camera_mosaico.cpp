@@ -61,6 +61,14 @@ constexpr uint32_t UYVY_BPP        = 2;
 constexpr uint32_t RGB888_BPP      = 3;
 constexpr uint32_t RGB_DISPLAY_BPP = 2;
 
+/* The geometry both conversions are produced at. The PPA scales in one pass and
+ * truncates its factor to whole 1/16 steps (PPA_SCALE_STEPS), so the size asked
+ * for has to be a whole number of those steps of the frame: 320x180 is exactly a
+ * quarter of the sensor's 1280x720 frame in both axes, which keeps the 16:9
+ * aspect ratio and lands on the scaler's grid. */
+constexpr uint32_t OUT_W = 320;
+constexpr uint32_t OUT_H = 180;
+
 /* The camera is a hot-pluggable module, so it is not necessarily in its slot the
  * instant the app boots. Bounded retry, not a wait: three attempts, each of
  * which may itself wait up to discovery_timeout_ms inside the claim. */
@@ -150,6 +158,10 @@ public:
 
     /** True once the module handle exists and its video device is open. */
     bool is_ok() const override { return opened_ && fb_ != nullptr; }
+
+    /** What this devkit's PPA produces for both consumers, whatever the state of
+     *  the capture path — the screen is laid out from it before a frame exists. */
+    Geometry output_geometry() const override { return Geometry{OUT_W, OUT_H}; }
 
     esp_err_t capture(Frame &out) override
     {

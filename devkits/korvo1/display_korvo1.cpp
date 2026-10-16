@@ -64,23 +64,13 @@ public:
     }
 
     /**
-     * 800x480 panel. The 240x240 camera image is placed right of centre — the
-     * 240 px column at x=280 ends at 520, leaving room for the detection labels
-     * in the 240 px column at x=540. The dismiss hint sits below the image
-     * (120 + 240 = 360), off the image itself.
+     * 800x480 panel, from the BSP's own geometry defines — the panel's size is a
+     * hardware fact, not a UI decision. Where anything sits on it is the
+     * application's business (main/ui_layout.hpp).
      */
-    ResultLayout layout() const override
-    {
-        return ResultLayout{
-            .img_x = 280,
-            .img_y = 120,
-            .img_w = 240,
-            .img_h = 240,
-            .label_x = 540,
-            .label_w = 240,
-            .hint_y = 375,
-        };
-    }
+    int32_t width() const override { return BSP_LCD_H_RES; }
+
+    int32_t height() const override { return BSP_LCD_V_RES; }
 };
 
 }  // namespace

@@ -77,6 +77,18 @@ struct Image {
     PixelOrder order = PixelOrder::RGB;
 };
 
+/**
+ * Pixel geometry of an image.
+ *
+ * Reported by the devkit rather than chosen by the application: the capture path
+ * either has no scaler (and yields the sensor's own frame) or scales in hardware,
+ * and only the devkit knows what its hardware can produce exactly.
+ */
+struct Geometry {
+    uint32_t width;   /**< pixels */
+    uint32_t height;  /**< pixels */
+};
+
 class Camera {
 public:
     /** Create the devkit's Camera implementation. Caller owns the object. */
@@ -86,6 +98,21 @@ public:
 
     /** True if the capture path came up and capture() can be used. */
     virtual bool is_ok() const = 0;
+
+    /**
+     * @brief The geometry both conversions are produced at.
+     *
+     * The detector reports its boxes in the coordinates of the image it is
+     * given, and the screen draws them 1:1 over the displayed image, so the two
+     * must be produced at one geometry — this one. The application passes it to
+     * to_model_input() and to_display(), and lays the screen out around it.
+     *
+     * A devkit without a scaler reports the geometry its sensor delivers; one
+     * that can scale reports the geometry it can produce exactly. Answerable
+     * even when the capture path failed to come up, so a screen can still be
+     * laid out.
+     */
+    virtual Geometry output_geometry() const = 0;
 
     /**
      * @brief Capture one still frame.
