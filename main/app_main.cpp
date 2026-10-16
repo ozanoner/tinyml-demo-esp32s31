@@ -78,6 +78,120 @@ static void return_to_command_mode()
     }
 }
 
+/* ---------------------------------------------------------------------------
+ *  Screen wiring — installed once, when the screen is built
+ *
+ *  These two are wiring, not per-command state. MainScreen's countdown callback
+ *  is read without a lock by the capture worker (main_screen.cpp:804, :810) and
+ *  by the LVGL timer (:866), so assigning it from the voice task while a
+ *  countdown or a capture was in flight raced those readers — and a
+ *  std::function must never be reassigned under a concurrent copy. Both are
+ *  therefore installed exactly once, in on_splash_dismissed() below, before the
+ *  voice pipeline exists and before anything can dispatch to the screen
+ *  (issue #52).
+ * ------------------------------------------------------------------------- */
+
+/** What the "cheese" countdown ends with. Runs in the capture worker task. */
+static void start_capture_cycle()
+{
+    if (g_camera == nullptr || !g_camera->is_ok()) {
+        ESP_LOGE(TAG, "Camera not available");
+        if (g_ui != nullptr) {
+            g_ui->set_status(ui::text::kStateWakeWord);
+            g_ui->set_message(ui::text::kSayWakeWord);
+        }
+        return;
+    }
+
+    devkit::Frame frame;
+    esp_err_t ret = g_camera->capture(frame);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "capture failed: %s", esp_err_to_name(ret));
+        if (g_ui != nullptr) {
+            g_ui->set_status(ui::text::kStateWakeWord);
+            g_ui->set_message(ui::text::kSayWakeWord);
+        }
+        return;
+    }
+
+    ESP_LOGI(TAG, "Frame: %lux%lu  stride=%lu  bytes=%lu",
+             (unsigned long)frame.width, (unsigned long)frame.height,
+             (unsigned long)frame.stride, (unsigned long)frame.bytes);
+
+    /* One geometry for both converted images: the detector reports its boxes in
+     * the coordinates of the image it is given, and the screen draws them 1:1
+     * over the displayed image. The devkit owns both buffers and converts in
+     * hardware where it can. */
+    const devkit::Geometry want = g_camera->output_geometry();
+
+    devkit::Image model_img{};
+    const int64_t cvt_t0 = esp_timer_get_time();
+    ret = g_camera->to_model_input(frame, want.width, want.height, model_img);
+    const int64_t cvt_t1 = esp_timer_get_time();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "to_model_input failed: %s", esp_err_to_name(ret));
+        if (g_ui != nullptr) {
+            g_ui->set_status(ui::text::kStateWakeWord);
+            g_ui->set_message(ui::text::kSayWakeWord);
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "CVT:%lu ms  %lux%lu",
+             (unsigned long)((cvt_t1 - cvt_t0) / 1000),
+             (unsigned long)model_img.width,
+             (unsigned long)model_img.height);
+
+    if (g_ui != nullptr) g_ui->set_status(ui::text::kStateAnalysing);
+
+    if (g_detector != nullptr) {
+        const bool started = g_detector->detect_async(
+            model_img.data, model_img.width, model_img.height,
+            model_img.order,
+            [frame, want](const char * /*text*/,
+                          const std::list<dl::detect::result_t> &results) {
+                /* Analysis finished — leave "Analysing image..." and return to
+                 * command mode while the result is on screen. */
+                return_to_command_mode();
+
+                /* Show the frame the way this panel expects it, at the geometry
+                 * the detector saw. The devkit writes into its own buffer and the
+                 * screen copies it synchronously. */
+                devkit::Image disp_img{};
+                if (g_camera->to_display(frame, want.width, want.height,
+                                         disp_img) != ESP_OK) {
+                    ESP_LOGE(TAG, "to_display failed — no result screen");
+                    return;
+                }
+
+                if (g_ui == nullptr) return;
+                g_ui->show_result(disp_img.data,
+                                  disp_img.width, disp_img.height,
+                                  disp_img.stride, disp_img.bytes,
+                                  results);
+                /* The directive for the screen that is now up. */
+            });
+        if (!started) {
+            ESP_LOGE(TAG, "detect_async did not start — no result screen");
+            return_to_command_mode();
+        }
+    } else {
+        if (g_ui != nullptr) {
+            g_ui->show_temp(ui::text::kStatePhoto, 2000, ui::text::kStateWakeWord);
+        }
+    }
+}
+
+/** The shown result was dismissed (tap or timer): listen for a command again. */
+static void handle_result_dismissed()
+{
+    if (g_voice != nullptr) {
+        g_voice->enter_command_mode();
+    }
+    if (g_ui != nullptr) {
+        g_ui->set_message(ui::text::kSayCommand);
+    }
+}
+
 static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
 {
     /* Hardware facts only: the panel's own geometry, and the geometry the camera
@@ -95,6 +209,12 @@ static void on_splash_dismissed(Splash::Reason /*r*/, void * /*arg*/)
     }
 
     g_ui->set_message(ui::text::kSayWakeWord);
+
+    /* The two callbacks this screen will be driven through, installed here
+     * because nothing can dispatch to the screen yet — the voice pipeline is
+     * created later in app_main (issue #52). */
+    g_ui->on_countdown_done(start_capture_cycle);
+    g_ui->on_result_dismissed(handle_result_dismissed);
 }
 
 /* ---------------------------------------------------------------------------
@@ -229,94 +349,6 @@ extern "C" void app_main(void)
         }
 
         g_ui->show_command(cmd);
-
-        g_ui->on_countdown_done([]() {
-            if (g_camera == nullptr || !g_camera->is_ok()) {
-                ESP_LOGE(TAG, "Camera not available");
-                if (g_ui != nullptr) {
-                    g_ui->set_status(ui::text::kStateWakeWord);
-                    g_ui->set_message(ui::text::kSayWakeWord);
-                }
-                return;
-            }
-
-            devkit::Frame frame;
-            esp_err_t ret = g_camera->capture(frame);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "capture failed: %s", esp_err_to_name(ret));
-                if (g_ui != nullptr) {
-                    g_ui->set_status(ui::text::kStateWakeWord);
-                    g_ui->set_message(ui::text::kSayWakeWord);
-                }
-                return;
-            }
-
-            ESP_LOGI(TAG, "Frame: %lux%lu  stride=%lu  bytes=%lu",
-                     (unsigned long)frame.width, (unsigned long)frame.height,
-                     (unsigned long)frame.stride, (unsigned long)frame.bytes);
-
-            /* One geometry for both converted images: the detector reports its
-             * boxes in the coordinates of the image it is given, and the screen
-             * draws them 1:1 over the displayed image. The devkit owns both
-             * buffers and converts in hardware where it can. */
-            const devkit::Geometry want = g_camera->output_geometry();
-
-            devkit::Image model_img{};
-            const int64_t cvt_t0 = esp_timer_get_time();
-            ret = g_camera->to_model_input(frame, want.width, want.height, model_img);
-            const int64_t cvt_t1 = esp_timer_get_time();
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "to_model_input failed: %s", esp_err_to_name(ret));
-                if (g_ui != nullptr) {
-                    g_ui->set_status(ui::text::kStateWakeWord);
-                    g_ui->set_message(ui::text::kSayWakeWord);
-                }
-                return;
-            }
-            ESP_LOGI(TAG, "CVT:%lu ms  %lux%lu",
-                     (unsigned long)((cvt_t1 - cvt_t0) / 1000),
-                     (unsigned long)model_img.width,
-                     (unsigned long)model_img.height);
-
-            if (g_ui != nullptr) g_ui->set_status(ui::text::kStateAnalysing);
-
-            if (g_detector != nullptr) {
-                const bool started = g_detector->detect_async(
-                    model_img.data, model_img.width, model_img.height,
-                    model_img.order,
-                    [frame, want](const char * /*text*/,
-                                  const std::list<dl::detect::result_t> &results) {
-                        /* Analysis finished — leave "Analysing image..." and
-                         * return to command mode while the result is on screen. */
-                        return_to_command_mode();
-
-                        /* Show the frame the way this panel expects it, at the
-                         * geometry the detector saw. The devkit writes into its
-                         * own buffer and the screen copies it synchronously. */
-                        devkit::Image disp_img{};
-                        if (g_camera->to_display(frame, want.width, want.height,
-                                                 disp_img) != ESP_OK) {
-                            ESP_LOGE(TAG, "to_display failed — no result screen");
-                            return;
-                        }
-
-                        if (g_ui == nullptr) return;
-                        g_ui->show_result(disp_img.data,
-                                          disp_img.width, disp_img.height,
-                                          disp_img.stride, disp_img.bytes,
-                                          results);
-                        /* The directive for the screen that is now up. */
-                    });
-                if (!started) {
-                    ESP_LOGE(TAG, "detect_async did not start — no result screen");
-                    return_to_command_mode();
-                }
-            } else {
-                if (g_ui != nullptr) {
-                    g_ui->show_temp(ui::text::kStatePhoto, 2000, ui::text::kStateWakeWord);
-                }
-            }
-        });
     };
 
     auto on_timeout = [](const char *) {
@@ -335,18 +367,7 @@ extern "C" void app_main(void)
         return;
     }
 
-    /* The result is dismissed by a tap or after 10 s (REQ-008 either way): both
-     * paths land here, and the pipeline goes back to listening for the command. */
-    if (g_ui != nullptr) {
-        g_ui->on_result_dismissed([]() {
-            if (g_voice != nullptr) {
-                g_voice->enter_command_mode();
-            }
-            if (g_ui != nullptr) {
-                g_ui->set_message(ui::text::kSayCommand);
-            }
-        });
-    }
+    /* The result-dismissal callback is installed at screen construction, above. */
 
     print_memory_summary("VOICE");
 

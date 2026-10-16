@@ -30,6 +30,9 @@
  *    blocks inside VIDIOC_DQBUF, and on the timer task that killed the countdown
  *    for the rest of the session). See state_display's original rationale, kept
  *    here with the machinery.
+ *  - the countdown callback and the dismissal callback are installed once, while
+ *    the screen is being built, and never reassigned: the worker and the LVGL
+ *    timer read them without taking a lock (issue #52).
  */
 
 #pragma once
@@ -106,7 +109,13 @@ public:
      */
     void show_temp(const char *text, uint32_t timeout_ms, const char *revert_to);
 
-    /** Install the capture trigger fired when the "cheese" countdown ends. */
+    /** Install the capture trigger fired when the "cheese" countdown ends.
+     *
+     *  Write-once: call it while the screen is being built, before anything can
+     *  dispatch a countdown to it. The LVGL timer and the capture worker read the
+     *  callback without a lock, so reassigning it once the screen is in use would
+     *  race those reads — and a std::function must not be reassigned under a
+     *  concurrent copy (issue #52). */
     void on_countdown_done(countdown_cb_t cb);
 
     /**
@@ -131,7 +140,10 @@ public:
                      uint32_t       w, uint32_t h, uint32_t stride, uint32_t bytes,
                      const std::list<dl::detect::result_t> &results);
 
-    /** Install the callback fired when a shown result is dismissed. */
+    /** Install the callback fired when a shown result is dismissed.
+     *
+     *  Write-once, like on_countdown_done(): install it while the screen is being
+     *  built, not after the voice pipeline starts (issue #52). */
     void on_result_dismissed(dismiss_cb_t cb);
 
 private:
