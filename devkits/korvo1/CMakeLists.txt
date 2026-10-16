@@ -14,7 +14,7 @@
 # Skipped during IDF's early-expansion pass, where no CONFIG_* value exists yet
 # (see main/CMakeLists.txt for the explanation).
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    if("$ENV{DEVKIT}" STREQUAL "korvo1" AND NOT CONFIG_DEVKIT_KORVO1)
+    if("${DEVKIT}" STREQUAL "korvo1" AND NOT CONFIG_DEVKIT_KORVO1)
         message(FATAL_ERROR
             "The korvo1 preset is selected but CONFIG_DEVKIT_KORVO1 is not set — the "
             "preset and build/korvo1/sdkconfig disagree. Delete "

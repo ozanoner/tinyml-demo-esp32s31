@@ -15,6 +15,7 @@
         "DEVKIT": "korvo1"
       },
       "cacheVariables": {
+        "DEVKIT": "korvo1",
         "IDF_TARGET": "esp32s31",
         "SDKCONFIG": "./build/korvo1/sdkconfig",
         "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;devkits/korvo1/sdkconfig.defaults"
@@ -29,6 +30,7 @@
         "DEVKIT": "mosaico"
       },
       "cacheVariables": {
+        "DEVKIT": "mosaico",
         "IDF_TARGET": "esp32s31",
         "SDKCONFIG": "./build/mosaico/sdkconfig",
         "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;devkits/mosaico/sdkconfig.defaults"

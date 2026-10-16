@@ -107,11 +107,18 @@ There is no separate `set-target` step and no `DEVKIT` variable to set: each
 preset carries the chip target (`esp32s31` in both) and its own
 `build/<devkit>/sdkconfig`.
 
-Both devkit directories stay in the build, so one dependency solution covers
-both. Two components cannot be satisfied by a single version — `esp_video`
-(Korvo BSP `~2.2` vs the ESP-Mosaico camera module `^2.4.1`) and `esp_codec_dev`
-(Korvo BSP `~1.5` vs the ESP-Mosaico BSP `~1.6`) — and are resolved by `overrides`
-in `main/idf_component.yml`, which names the version and the reason for each.
+Each build excludes the other devkit (`EXCLUDE_COMPONENTS` in the top-level
+`CMakeLists.txt`), because both BSPs export the same symbols (`bsp_display_new`,
+`bsp_display_lock`, `bsp_touch_new`, …) and a build carrying both fails to link.
+Each devkit therefore resolves its own version set — Korvo-1 gets
+`esp_video 2.2.0` + `esp_codec_dev 1.5.x`, the ESP-Mosaico `esp_video 2.5.x` +
+`esp_codec_dev 1.6.x`, the sets issues #36/#38 and #35 were verified against.
+
+Excluding a component also removes its manifest from the dependency solve, so
+switching devkits re-solves the graph and prunes the other devkit's components
+from `managed_components/` (about 19 of them, re-fetched on that devkit's next
+build — measured at ~80 s). Each devkit's build directory, object files and image
+survive the switch, and there is no `set-target` and no full clean.
 
 ### Flash (app partition only)
 

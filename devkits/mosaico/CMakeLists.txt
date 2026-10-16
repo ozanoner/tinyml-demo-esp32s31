@@ -14,7 +14,7 @@
 # Skipped during IDF's early-expansion pass, where no CONFIG_* value exists yet
 # (see main/CMakeLists.txt for the explanation).
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    if("$ENV{DEVKIT}" STREQUAL "mosaico" AND NOT CONFIG_DEVKIT_MOSAICO)
+    if("${DEVKIT}" STREQUAL "mosaico" AND NOT CONFIG_DEVKIT_MOSAICO)
         message(FATAL_ERROR
             "The mosaico preset is selected but CONFIG_DEVKIT_MOSAICO is not set — the "
             "preset and build/mosaico/sdkconfig disagree. Delete "

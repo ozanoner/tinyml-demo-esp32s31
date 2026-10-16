@@ -21,6 +21,13 @@
 #
 # Each devkit validates its own CONFIG_* symbol in its own CMakeLists.txt
 # instead, which is where a Kconfig-based check belongs.
+# The top-level CMakeLists.txt resolves the devkit from the preset and exports
+# it back into the environment for precisely this pass, so DEVKIT is present here
+# both on a fresh configure and on a `cmake --regenerate-during-build` run (whose
+# parent has no preset environment but does have the cache).
+#
+# Each devkit validates its own CONFIG_* symbol in its own CMakeLists.txt
+# instead, which is where a Kconfig-based check belongs.
 if(NOT DEFINED ENV{DEVKIT} OR "$ENV{DEVKIT}" STREQUAL "")
     message(FATAL_ERROR "DEVKIT is not set. Build with: idf.py --preset <devkit> build")
 endif()
