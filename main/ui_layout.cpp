@@ -53,6 +53,13 @@ Layout compute_layout(int32_t panel_w, int32_t panel_h, int32_t img_w, int32_t i
     l.list.y = l.picture.y;
     l.list.w = panel_w - margin - l.list.x;
     l.list.h = img_h;
+
+    /* The image's own directive line, in the gap between the picture's bottom
+       edge and the divider. Height is the label's business (ui_layout stays free
+       of LVGL); the caller checks it fits before the divider. */
+    l.image_dir.x = l.picture.x;
+    l.image_dir.y = l.picture.y + l.picture.h + kMetrics.image_dir_gap;
+    l.image_dir.w = l.picture.w;
     if (l.list.w < 0) {
         l.list.w = 0;
     }

@@ -306,7 +306,6 @@ extern "C" void app_main(void)
                                           disp_img.stride, disp_img.bytes,
                                           results);
                         /* The directive for the screen that is now up. */
-                        g_ui->set_message(ui::text::kTapToClose);
                     });
                 if (!started) {
                     ESP_LOGE(TAG, "detect_async did not start — no result screen");
