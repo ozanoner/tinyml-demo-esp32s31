@@ -1,12 +1,16 @@
 /**
  * @file detector.cpp
- * @brief COCO object detection — wraps COCODetect, owns inference task.
+ * @brief COCO object detection — wraps COCODetect, owns the inference task.
  *
  * The input is three bytes per pixel; whatever the camera delivered was
  * converted by devkit::Camera before it reached this file, together with the
  * component order that conversion produced. That order is all this file needs to
  * pick esp-dl's matching pixel type — no byte swapping happens here or in the
  * devkit.
+ *
+ * One inference at a time: the task is created once, on the first detect_async(),
+ * and every later frame is a direct notification. A frame that arrives while one
+ * is in flight is refused, not queued.
  */
 
 #include "detector.hpp"
@@ -36,10 +40,12 @@ dl::image::pix_type_t to_espdl_pix_type(devkit::PixelOrder order)
 
 }  // namespace
 
-/* Static task resources (PSRAM-backed stack) */
-StackType_t  Detector::task_stack_[8 * 1024 / sizeof(StackType_t)]
+/* Static task resources (PSRAM-backed stack), created once — see the member
+ * comments in detector.hpp for why they are never re-initialised. */
+StackType_t  Detector::task_stack_[Detector::DETECT_TASK_STACK_UNITS]
     __attribute__((section(".ext_ram.bss")));
 StaticTask_t Detector::task_tcb_;
+TaskHandle_t Detector::task_ = nullptr;
 
 /* ---------------------------------------------------------------------------
  *  Construction / Destruction
@@ -114,7 +120,7 @@ bool Detector::detect(const uint8_t *pixels,
 }
 
 /* ---------------------------------------------------------------------------
- *  detect_async — launches inference in a dedicated FreeRTOS task
+ *  detect_async — hand one frame to the inference task
  * ------------------------------------------------------------------------- */
 
 bool Detector::detect_async(const uint8_t *pixels,
@@ -127,6 +133,37 @@ bool Detector::detect_async(const uint8_t *pixels,
         ESP_LOGE(TAG, "Detector not initialised");
         return false;
     }
+    if (pixels == nullptr || width == 0 || height == 0) {
+        ESP_LOGE(TAG, "No frame to analyse");
+        return false;
+    }
+
+    /* One frame at a time. The task owns the model and this frame's copy until
+     * it hands the result back, so a second frame is refused here rather than
+     * queued: the caller (app_main) already reports a detection that did not
+     * start and returns the screen to command mode. */
+    bool idle = false;
+    if (!infer_busy_.compare_exchange_strong(idle, true)) {
+        ESP_LOGW(TAG, "inference already in flight — frame refused");
+        return false;
+    }
+
+    /* The task is created once and lives for the life of the app; every later
+     * frame is a notification. The depth is the buffer's own size in its own
+     * unit, so the two cannot disagree. */
+    if (task_ == nullptr) {
+        TaskHandle_t th = xTaskCreateStatic(task_entry, "detect",
+                                            sizeof(task_stack_) / sizeof(StackType_t),
+                                            nullptr, 5, task_stack_, &task_tcb_);
+        if (th == nullptr) {
+            ESP_LOGE(TAG, "Failed to create the inference task");
+            infer_busy_.store(false);
+            return false;
+        }
+        task_ = th;
+        ESP_LOGI(TAG, "Inference task started (stack %lu bytes)",
+                 (unsigned long)(sizeof(task_stack_)));
+    }
 
     /* Copy the frame so the task owns it (the camera's buffer is reused by the
      * next capture). Size follows from the geometry — no fixed frame size. */
@@ -135,6 +172,7 @@ bool Detector::detect_async(const uint8_t *pixels,
         heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
     if (fdup == nullptr) {
         ESP_LOGE(TAG, "OOM for frame copy (%u bytes)", (unsigned)fsz);
+        infer_busy_.store(false);
         return false;
     }
     memcpy(fdup, pixels, fsz);
@@ -150,60 +188,71 @@ bool Detector::detect_async(const uint8_t *pixels,
     if (arg == nullptr) {
         ESP_LOGE(TAG, "OOM for infer_arg_t");
         heap_caps_free(fdup);
+        infer_busy_.store(false);
         return false;
     }
 
-    TaskHandle_t th = xTaskCreateStatic(
-        task_entry, "detect", 8 * 1024, arg, 5, task_stack_, &task_tcb_);
-    if (th == nullptr) {
-        ESP_LOGE(TAG, "Failed to create detect task");
-        heap_caps_free(fdup);
-        delete arg;
-        return false;
-    }
-
+    /* Hand it over. A notification is held in the task's TCB until the task
+     * waits on it, so a frame handed over between the claim being released and
+     * the wait is not lost. */
+    xTaskNotify(task_, (uint32_t)(uintptr_t)arg, eSetValueWithOverwrite);
     return true;
 }
 
 /* ---------------------------------------------------------------------------
- *  task_entry — static, runs in dedicated PSRAM stack
+ *  task_entry — the inference task (created once, waits for frames)
  * ------------------------------------------------------------------------- */
 
-void Detector::task_entry(void *arg)
+void Detector::task_entry(void * /*arg*/)
 {
-    auto *ia = static_cast<infer_arg_t *>(arg);
-    Detector *self = ia->self;
-    int64_t t_start = esp_timer_get_time();
+    uint32_t notified = 0;
 
-    ESP_LOGI(TAG, "task started  t=%lld ms", (t_start / 1000));
-
-    std::list<dl::detect::result_t> results;
-    bool ok = self->detect(ia->data, ia->width, ia->height, ia->order, results);
-
-    int64_t t_inf = esp_timer_get_time();
-    ESP_LOGI(TAG, "task done  ok=%d  detections=%u  t=%lld ms",
-             ok, (unsigned)results.size(), (t_inf / 1000));
-
-    /* Format top-2 results */
-    char buf[64];
-    if (ok && !results.empty()) {
-        auto it = results.begin();
-        int printed = snprintf(buf, sizeof(buf), "obj %d %.0f%%",
-                 it->category, (double)(it->score * 100.0f));
-        if (++it != results.end()) {
-            snprintf(buf + printed, sizeof(buf) - printed,
-                     " / obj %d %.0f%%",
-                     it->category, (double)(it->score * 100.0f));
+    for (;;) {
+        if (xTaskNotifyWait(0, 0xFFFFFFFFu, &notified, portMAX_DELAY) != pdPASS) {
+            continue;
         }
-    } else {
-        snprintf(buf, sizeof(buf), "No objects detected");
-    }
 
-    if (ia->cb) {
-        ia->cb(buf, results);
-    }
+        auto *ia = reinterpret_cast<infer_arg_t *>(notified);
+        if (ia == nullptr) {
+            continue;
+        }
 
-    heap_caps_free(ia->data);
-    delete ia;
-    vTaskDelete(nullptr);
+        Detector *self = ia->self;
+        int64_t t_start = esp_timer_get_time();
+
+        ESP_LOGI(TAG, "task started  t=%lld ms", (t_start / 1000));
+
+        std::list<dl::detect::result_t> results;
+        bool ok = self->detect(ia->data, ia->width, ia->height, ia->order, results);
+
+        int64_t t_inf = esp_timer_get_time();
+        ESP_LOGI(TAG, "task done  ok=%d  detections=%u  t=%lld ms",
+                 ok, (unsigned)results.size(), (t_inf / 1000));
+
+        /* Format top-2 results */
+        char buf[64];
+        if (ok && !results.empty()) {
+            auto it = results.begin();
+            int printed = snprintf(buf, sizeof(buf), "obj %d %.0f%%",
+                     it->category, (double)(it->score * 100.0f));
+            if (++it != results.end()) {
+                snprintf(buf + printed, sizeof(buf) - printed,
+                         " / obj %d %.0f%%",
+                         it->category, (double)(it->score * 100.0f));
+            }
+        } else {
+            snprintf(buf, sizeof(buf), "No objects detected");
+        }
+
+        if (ia->cb) {
+            ia->cb(buf, results);
+        }
+
+        heap_caps_free(ia->data);
+        delete ia;
+
+        /* The frame is consumed: release the claim before waiting for the next
+         * one, so the next detect_async() is admitted. */
+        self->infer_busy_.store(false);
+    }
 }
