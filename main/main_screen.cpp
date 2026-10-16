@@ -384,9 +384,13 @@ void MainScreen::show_temp(const char *text, uint32_t timeout_ms, const char *re
 
     if (!lock_lvgl()) return;
 
-    revert_to_    = (revert_to != nullptr) ? revert_to : ui::text::kStateCommand;
-    countdown_    = 0;
-    countdown_cb_ = nullptr;   /* cancel any pending countdown action */
+    revert_to_ = (revert_to != nullptr) ? revert_to : ui::text::kStateCommand;
+    /* Clearing countdown_ is what cancels a pending countdown: on_timer() only
+     * hands the callback to the worker on the tick that takes it to 1. The
+     * callback itself is installed once, when the screen is built, and is never
+     * reassigned — the capture worker reads it without a lock, so writing it here
+     * (or per command) would race that read (issue #52). */
+    countdown_ = 0;
 
     snprintf(status_, sizeof(status_), "%s", text);
     ESP_LOGI(TAG, "Temp status: %s  timeout=%lu ms  revert=%s",
