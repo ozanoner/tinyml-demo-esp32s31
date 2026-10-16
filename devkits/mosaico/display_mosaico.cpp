@@ -72,31 +72,13 @@ public:
     }
 
     /**
-     * 480x480 panel. Derived from the panel geometry rather than copied from
-     * another devkit, so every widget lands on-panel whatever the size: the
-     * detection-label column is the right third and the dismiss hint sits in the
-     * bottom margin.
-     *
-     * The image is the size the devkit asks the camera for and scales to with
-     * the PPA: 320x180, which is exactly a quarter of the sensor's 1280x720 in
-     * both axes (a whole 1/16 step of the scaler) and keeps the sensor's 16:9
-     * frame undistorted. That leaves the right 160 px for the labels.
+     * 480x480 panel, from the BSP's own geometry defines — a hardware fact, not
+     * a UI decision. Placement is derived from it by the application
+     * (main/ui_layout.hpp).
      */
-    ResultLayout layout() const override
-    {
-        constexpr int32_t W = BSP_LCD_H_RES;
-        constexpr int32_t H = BSP_LCD_V_RES;
+    int32_t width() const override { return BSP_LCD_H_RES; }
 
-        return ResultLayout{
-            .img_x   = 0,
-            .img_y   = H / 8,
-            .img_w   = 320,
-            .img_h   = 180,
-            .label_x = W - (W / 3),
-            .label_w = W / 3,
-            .hint_y  = H - (H / 10),
-        };
-    }
+    int32_t height() const override { return BSP_LCD_V_RES; }
 };
 
 }  // namespace

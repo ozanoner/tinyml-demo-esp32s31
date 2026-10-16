@@ -118,6 +118,13 @@ public:
 
     bool is_ok() const override { return fb_ != nullptr; }
 
+    /**
+     * No scaler on this devkit: both conversions come out at the sensor's own
+     * geometry, selected by this devkit's sdkconfig.defaults (the OV3660 DVP
+     * mode configured there), and the detector resizes for its model itself.
+     */
+    Geometry output_geometry() const override { return Geometry{FRAME_W, FRAME_H}; }
+
     esp_err_t capture(Frame &out) override
     {
         if (fb_ == nullptr) {

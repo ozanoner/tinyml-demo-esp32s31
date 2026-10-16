@@ -1,11 +1,15 @@
 /**
  * @file display.hpp
- * @brief Display + LVGL interface: bring-up, mutual exclusion, layout.
+ * @brief Display + LVGL interface: bring-up, mutual exclusion, panel geometry.
  *
  * The application owns an LVGL-based UI and calls these methods. Everything
- * device-specific — the panel, the bus, the LVGL port/adapter, the draw-buffer
- * sizing, the backlight and the placement of the result screen — is implemented
- * by the devkit.
+ * device-specific — the panel, the bus, the LVGL port/adapter and the draw-buffer
+ * sizing — is implemented by the devkit.
+ *
+ * The devkit reports hardware facts and nothing else: the panel's own geometry.
+ * Where the UI puts anything is derived from that plus the frame geometry the
+ * camera produced (see main/ui_layout.hpp) — this interface carries no widget
+ * coordinates.
  */
 
 #pragma once
@@ -15,22 +19,6 @@
 #include "esp_err.h"
 
 namespace devkit {
-
-/**
- * @brief Placement of the result screen's widgets, in panel pixels.
- *
- * Absolute coordinates are device-specific (the panel sizes differ), so the
- * devkit owns them; the UI code only positions widgets from these values.
- */
-struct ResultLayout {
-    int32_t img_x;    /**< camera image origin, x */
-    int32_t img_y;    /**< camera image origin, y */
-    int32_t img_w;    /**< camera image width; the geometry handed to the detector */
-    int32_t img_h;    /**< camera image height */
-    int32_t label_x;  /**< detection-label column, x */
-    int32_t label_w;  /**< detection-label column width */
-    int32_t hint_y;   /**< y of the dismiss hint */
-};
 
 class Display {
 public:
@@ -43,7 +31,7 @@ public:
      * @brief Initialise the panel and the LVGL stack.
      *
      * Sizes and allocates its own draw buffers. After this returns, LVGL is
-     * running and lock() / unlock() / layout() are meaningful.
+     * running and lock() / unlock() / the panel geometry are meaningful.
      */
     virtual esp_err_t init() = 0;
 
@@ -61,8 +49,11 @@ public:
     /** Turn the display on / raise brightness. Best-effort where unsupported. */
     virtual esp_err_t backlight_on() = 0;
 
-    /** Result-screen placement for this panel. */
-    virtual ResultLayout layout() const = 0;
+    /** Panel width, pixels. Hardware fact. */
+    virtual int32_t width() const = 0;
+
+    /** Panel height, pixels. Hardware fact. */
+    virtual int32_t height() const = 0;
 
 protected:
     Display() = default;
