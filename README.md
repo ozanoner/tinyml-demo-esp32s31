@@ -13,9 +13,14 @@ inference on it, and show the frame with its detections on the LCD.
 - **Object detection** — YOLO11n 320×320 via ESP-DL (`espressif/coco_detect`),
   ~3.2 s inference, COCO 80-class model
 - **LCD display** — one main screen in two rows: the picture (with its coloured
-  bounding boxes) beside the detection list, over a status line and a directive
-  line. One layout for both devkits, derived from the panel's own geometry
-- **Auto-dismiss** — 10 s timer or tap anywhere dismisses the result
+- **LCD display** — one main screen in two rows: the picture (with its coloured
+  bounding boxes and its own "tap to clear" line) beside the detection list, over
+  a status line and a state directive line. One layout for both devkits, derived
+  from the panel's own geometry
+- **Named detections** — each row shows the model's own class name (`person`,
+  `cat`, `traffic light`, …) and its accuracy
+- **Persistent result** — the capture stays on screen until a tap clears it or the
+  next "cheese" replaces it. There is no auto-dismiss
 
 ## Tech Stack
 
@@ -66,8 +71,11 @@ subsystems:
 **Key classes:**
 
 - `MainScreen` (`main/main_screen.{hpp,cpp}`) — the main screen: picture,
-  detection list, status line and directive line. Owns the "cheese" countdown,
-  the capture worker task and the 10 s result auto-dismiss
+  its directive line, the detection list, the status line and the state directive
+  line. Owns the "cheese" countdown and the capture worker task; the result
+  persists until a tap or the next "cheese"
+- `object_labels.hpp` — the model's own 80 class names, generated from the model's
+  metadata by `tools/gen_object_labels.py`, never hand-transcribed
 - `ui_theme.hpp` / `ui_layout.hpp` — the visual system in one place (palette, type
   scale, screen texts) and the placement derived from hardware facts: the panel
   geometry the devkit reports and the frame geometry the camera produces

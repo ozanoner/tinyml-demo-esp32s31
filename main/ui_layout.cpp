@@ -53,6 +53,13 @@ Layout compute_layout(int32_t panel_w, int32_t panel_h, int32_t img_w, int32_t i
     l.list.y = l.picture.y;
     l.list.w = panel_w - margin - l.list.x;
     l.list.h = img_h;
+
+    /* The image's own directive line, in the gap between the picture's bottom
+       edge and the divider. Height is the label's business (ui_layout stays free
+       of LVGL); the caller checks it fits before the divider. */
+    l.image_dir.x = l.picture.x;
+    l.image_dir.y = l.picture.y + l.picture.h + kMetrics.image_dir_gap;
+    l.image_dir.w = l.picture.w;
     if (l.list.w < 0) {
         l.list.w = 0;
     }
@@ -70,11 +77,13 @@ Layout compute_layout(int32_t panel_w, int32_t panel_h, int32_t img_w, int32_t i
     }
 
     ESP_LOGI(TAG, "panel %ldx%ld  frame %ldx%ld  ->  picture (%ld,%ld %ldx%ld)  "
-                  "list (%ld,%ld %ldx%ld)  message (%ld,%ld %ldx%ld)  divider y=%ld",
+                  "list (%ld,%ld %ldx%ld)  message (%ld,%ld %ldx%ld)  "
+                  "image line (%ld,%ld w=%ld)  divider y=%ld",
              (long)panel_w, (long)panel_h, (long)img_w, (long)img_h,
              (long)l.picture.x, (long)l.picture.y, (long)l.picture.w, (long)l.picture.h,
              (long)l.list.x, (long)l.list.y, (long)l.list.w, (long)l.list.h,
              (long)l.message.x, (long)l.message.y, (long)l.message.w, (long)l.message.h,
+             (long)l.image_dir.x, (long)l.image_dir.y, (long)l.image_dir.w,
              (long)l.divider_y);
 
     return l;

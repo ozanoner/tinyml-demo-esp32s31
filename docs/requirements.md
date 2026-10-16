@@ -88,7 +88,7 @@ The application shall display the current operating state on the LCD at all time
   - "Listening for command..."
   - "Taking photo..."
   - "Analysing image..."
-  - "No objects detected" (when inference completes with no results)
+  - "No Detection" in the detection list (when inference completes with no results — the status line returns to "Listening for command...")
   - Detection results with bounding box overlay (when objects are found)
 - [ ] State transitions are instant — no blank screen between states
 - [ ] Splash screen (REQ-002) transitions directly into the first state ("Listening for wake word...")
@@ -106,7 +106,8 @@ After the BSP initialisation (REQ-002), integrate **ESP-SR** for always-on wake-
 - [ ] Continuous audio capture from onboard microphones via the BSP's audio pipeline
 - [ ] On wake word match → callback triggers MultiNet listening phase
 - [ ] **15-second timeout:** if no command detected within 15 s, fall back to WakeNet listening for wake word
-- [ ] Timeout resets / pushes forward during active processing (command detected, capturing, detecting, displaying)
+- [ ] Timeout resets / pushes forward during active processing (command detected, capturing, detecting)
+- [ ] A displayed result does **not** suppress that timeout: with a capture on screen the status line still falls back to wake-word listening when it fires, while the image stays (issue #43)
 - [ ] Wake word and detection threshold are configurable via `menuconfig` or code constants
 
 ---
@@ -162,10 +163,10 @@ Display the captured camera frame on the LCD, overlaid with object detection bou
 **Acceptance Criteria:**
 - [ ] Captured camera frame rendered as background image on the LCD
 - [ ] Detection bounding boxes drawn as coloured rectangles overlaid on the image
-- [ ] Class label + confidence score displayed next to each bounding box in readable text
-- [ ] No-detection case: "No objects detected" message shown on screen
-- [ ] Results screen auto-dismisses after 10 s and returns to WakeNet listening
-- [ ] Tap anywhere dismisses results immediately and returns to WakeNet listening
+- [ ] Each detection shown as its **object name and confidence score** in the list beside the image, colour-matched to its bounding box by a swatch. The name is the model's own class list (80 COCO classes); a class the list does not know shows its index and is logged, never an invented name
+- [ ] No-detection case: "No Detection" in the detection list
+- [ ] **The result persists — there is no auto-dismiss.** The frame, its boxes and its list stay on screen with "tap to clear" under the picture until the user clears them
+- [ ] Tap anywhere clears the result immediately and returns to WakeNet listening. Detecting "cheese" also clears it, at the moment the command is detected, so the countdown runs over the white placeholder
 
 ---
 

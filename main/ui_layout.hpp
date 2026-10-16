@@ -43,6 +43,12 @@ struct Layout {
      *  inside it, so their height follows the font metrics, not this box. */
     Box message;
 
+    /** The image's own directive line: under the picture, left-aligned with it,
+     *  `image_dir_gap` below the picture's bottom edge. Width is the picture's
+     *  width, so the text can never reach the detection list. Its height follows
+     *  the font metrics, not this box. */
+    Box image_dir;
+
     /** The hairline between the rows. */
     int32_t divider_y = 0;
     int32_t divider_h = 0;

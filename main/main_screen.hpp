@@ -150,13 +150,13 @@ private:
     lv_obj_t   *msg_row_;          /**< message row container (centres its two lines) */
     lv_obj_t   *status_lbl_;
     lv_obj_t   *message_lbl_;
+    lv_obj_t   *image_dir_lbl_;    /**< the image's own directive, under the picture */
     std::vector<lv_obj_t *> rows_;  /**< detection list rows (owned) */
     std::vector<lv_obj_t *> boxes_; /**< bounding boxes over the picture (owned) */
 
     /* ---- result view -------------------------------------------------- */
     bool         result_up_;
     bool         dismissed_;
-    lv_timer_t  *dismiss_timer_;   /**< 10 s auto-dismiss (LVGL timer) */
     dismiss_cb_t dismiss_cb_;
 
     /* ---- countdown / auto-revert / stuck detector --------------------- */
@@ -208,7 +208,12 @@ private:
     void show_result_now(uint32_t w, uint32_t h, uint32_t stride, uint32_t bytes,
                          const std::list<dl::detect::result_t> &results);
 
-    /** Tear the result down and return to the placeholder. LVGL task. */
+    /** Take the result off screen and put the white placeholder back: rows, boxes,
+     *  the image, its directive line and the tap handler. Does NOT call the
+     *  dismissal callback — used by both the tap and the "cheese" clear. LVGL task. */
+    void teardown_result();
+
+    /** Tap path: teardown, then the app's dismissal callback. LVGL task. */
     void dismiss_result();
 
     /** (Re)arm the display timer. LVGL task. */
@@ -221,9 +226,6 @@ private:
     /** Timer callback — countdown tick, revert, or a capture that never came
      *  back. Runs in the LVGL task. */
     static void on_timer(lv_timer_t *t);
-
-    /** Result auto-dismiss tick. Runs in the LVGL task. */
-    static void on_dismiss_timer(lv_timer_t *t);
 
     /** Tap-to-dismiss. Runs in the LVGL task. */
     static void on_click(lv_event_t *e);

@@ -21,6 +21,8 @@
 #include "devkit/display.hpp"
 #include "ui_theme.hpp"
 
+#include "object_labels.hpp"
+
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
@@ -35,8 +37,9 @@ static constexpr const char *TAG = "screen";
 static constexpr int      COUNTDOWN_START   = 3;      /* cheese 3... -> 2... -> 1... */
 static constexpr uint32_t COUNTDOWN_MS      = 1000;   /* one countdown tick per second */
 static constexpr uint32_t REVERT_MS         = 3000;   /* hold for a detected command */
-static constexpr uint32_t RESULT_DISMISS_MS = 10000;  /* REQ-008 auto-dismiss */
 static constexpr int32_t  MSG_LINE_GAP      = 14;     /* status -> directive */
+static constexpr int32_t  ROW_PAD_COL       = 8;      /* swatch -> name gap in a list row */
+static constexpr int32_t  ACC_RESERVE_W     = 34;     /* width kept for "100%" at 14 px */
 
 TaskHandle_t MainScreen::s_cb_worker_  = nullptr;
 uint8_t     *MainScreen::s_img_buf_    = nullptr;
@@ -84,9 +87,9 @@ MainScreen::MainScreen(devkit::Display *display,
     , msg_row_(nullptr)
     , status_lbl_(nullptr)
     , message_lbl_(nullptr)
+    , image_dir_lbl_(nullptr)
     , result_up_(false)
     , dismissed_(false)
-    , dismiss_timer_(nullptr)
     , timer_(nullptr)
     , countdown_(0)
     , period_ms_(REVERT_MS)
@@ -151,6 +154,27 @@ MainScreen::MainScreen(devkit::Display *display,
     lv_obj_set_style_text_align(message_lbl_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(message_lbl_, "");
 
+    /* The image's own directive line ("tap to clear"). Directly on the screen and
+     * not inside the message row: it belongs to the picture and is left-aligned
+     * with it. Hidden while there is no image. No timer hides it — it stays until
+     * a tap or the next "cheese" clears the image (issue #43).
+     *
+     * Created BEFORE the layout pass below, not after it. apply_layout() is what
+     * positions this widget, it runs exactly once here, and its only other call
+     * site fires when the produced frame geometry differs from what the screen was
+     * laid out for — which on both devkits never happens. A widget created after
+     * this point therefore keeps LVGL's default position, (0,0), for the rest of
+     * the session: that is issue #43's "tap to clear" sitting in the panel's
+     * top-left corner instead of under the picture. */
+    image_dir_lbl_ = lv_label_create(scr);
+    lv_label_set_text(image_dir_lbl_, ui::text::kTapToClear);
+    lv_obj_set_style_text_font(image_dir_lbl_, ui::font::message(), 0);
+    lv_obj_set_style_text_color(image_dir_lbl_, lv_color_hex(ui::color::kMuted), 0);
+    /* Left-aligned with the picture's left edge, as the requirement states —
+     * explicit, not left to the theme's default for a label with a set width. */
+    lv_obj_set_style_text_align(image_dir_lbl_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_add_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
+
     /* Place everything. The frame geometry here is what the camera reports it
      * produces, so the placeholder is the frame's box before any capture. */
     apply_layout(static_cast<int32_t>(frame_w), static_cast<int32_t>(frame_h));
@@ -163,21 +187,6 @@ MainScreen::MainScreen(devkit::Display *display,
         ESP_LOGE(TAG, "lv_timer_create failed — countdown and revert disabled");
     } else {
         lv_timer_pause(timer_);
-    }
-
-    /* Result auto-dismiss (REQ-008): an LVGL timer, so it shares the LVGL task
-     * with the tap handler and the two cannot race over the same widgets. */
-    dismiss_timer_ = lv_timer_create(on_dismiss_timer, RESULT_DISMISS_MS, this);
-    if (dismiss_timer_ == nullptr) {
-        ESP_LOGE(TAG, "lv_timer_create failed — the result will not auto-dismiss");
-    } else {
-        /* Not a one-shot: LVGL deletes a timer whose repeat count reaches 0
-         * (lv_timer.c:103-111, auto_delete), which would leave this pointer
-         * dangling and make the NEXT result write through freed memory — a pool
-         * corruption that only faults later, inside the draw path. The timer
-         * repeats and dismiss_result() pauses it, which is the one-shot we need. */
-        lv_timer_set_auto_delete(dismiss_timer_, false);
-        lv_timer_pause(dismiss_timer_);
     }
 
     snprintf(status_, sizeof(status_), "%s", ui::text::kStateWakeWord);
@@ -201,10 +210,6 @@ MainScreen::~MainScreen()
         lv_timer_delete(timer_);
         timer_ = nullptr;
     }
-    if (dismiss_timer_ != nullptr) {
-        lv_timer_delete(dismiss_timer_);
-        dismiss_timer_ = nullptr;
-    }
 
     clear_rows();
     clear_boxes();
@@ -214,6 +219,10 @@ MainScreen::~MainScreen()
         msg_row_     = nullptr;
         status_lbl_  = nullptr;
         message_lbl_ = nullptr;
+    }
+    if (image_dir_lbl_ != nullptr) {
+        lv_obj_del(image_dir_lbl_);
+        image_dir_lbl_ = nullptr;
     }
     if (list_ != nullptr) {
         lv_obj_del(list_);
@@ -259,6 +268,33 @@ void MainScreen::apply_layout(int32_t frame_w, int32_t frame_h)
     if (msg_row_ != nullptr) {
         lv_obj_set_pos(msg_row_, layout_.message.x, layout_.message.y);
         lv_obj_set_size(msg_row_, layout_.message.w, layout_.message.h);
+    }
+    /* The image's own directive line: height follows the font, so check it against
+     * the divider instead of assuming — a line crossing the divider would be the
+     * very overlap this layout exists to prevent. */
+    if (image_dir_lbl_ != nullptr) {
+        const int32_t line_h = lv_font_get_line_height(ui::font::message());
+        lv_obj_set_pos(image_dir_lbl_, layout_.image_dir.x, layout_.image_dir.y);
+        lv_obj_set_width(image_dir_lbl_, layout_.image_dir.w);
+        /* Resolve the position before reading it back: lv_obj_get_x() returns
+         * obj->coords.x1 (lv_obj_pos.c:573-587), which the *layout pass* computes —
+         * not the value lv_obj_set_pos() just wrote. Without this call the read-back
+         * reports (0,0) whatever the position is, and a widget created after the last
+         * layout pass really does keep (0,0) for the whole session. That was issue
+         * #43: "tap to clear" in the panel's top-left corner. These coordinates are
+         * that regression's signature in the boot log. */
+        lv_obj_update_layout(image_dir_lbl_);
+        ESP_LOGI(TAG, "Image line: '%s' at (%ld,%ld) w=%ld  picture (%ld,%ld %ldx%ld)",
+                 ui::text::kTapToClear,
+                 (long)lv_obj_get_x(image_dir_lbl_), (long)lv_obj_get_y(image_dir_lbl_),
+                 (long)lv_obj_get_width(image_dir_lbl_),
+                 (long)layout_.picture.x, (long)layout_.picture.y,
+                 (long)layout_.picture.w, (long)layout_.picture.h);
+        if (layout_.image_dir.y + line_h > layout_.divider_y) {
+            ESP_LOGW(TAG, "Image directive line at y=%ld (+%ld) would cross the divider "
+                          "at y=%ld", (long)layout_.image_dir.y, (long)line_h,
+                     (long)layout_.divider_y);
+        }
     }
     if (status_lbl_ != nullptr) {
         lv_obj_set_width(status_lbl_, layout_.message.w);
@@ -462,13 +498,15 @@ void MainScreen::show_result_now(uint32_t w, uint32_t h, uint32_t stride, uint32
 
     lv_img_set_src(img_, &img_dsc_);
     lv_obj_clear_flag(img_, LV_OBJ_FLAG_HIDDEN);
+    if (image_dir_lbl_ != nullptr) {
+        lv_obj_clear_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
+    }
 
     build_rows(results);
     build_boxes(results);
 
-    /* Tap anywhere closes it; the timer closes it after RESULT_DISMISS_MS. Both
-     * run in the LVGL task, and dismissed_/result_up_ make whichever fires first
-     * the only one that acts. */
+    /* Tap anywhere clears it. There is no auto-dismiss (issue #43): the image stays
+     * until a tap or the next "cheese". */
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr != nullptr) {
         lv_obj_remove_event_cb(scr, on_click);   /* never stack handlers */
@@ -477,23 +515,14 @@ void MainScreen::show_result_now(uint32_t w, uint32_t h, uint32_t stride, uint32
     dismissed_ = false;
     result_up_ = true;
 
-    if (dismiss_timer_ != nullptr) {
-        lv_timer_reset(dismiss_timer_);
-        lv_timer_resume(dismiss_timer_);
-    }
-
     ESP_LOGI(TAG, "Result shown: %lux%lu, %u detection(s)",
              (unsigned long)w, (unsigned long)h, (unsigned)results.size());
 }
 
-void MainScreen::dismiss_result()
+void MainScreen::teardown_result()
 {
     if (!result_up_) return;
     result_up_ = false;
-
-    if (dismiss_timer_ != nullptr) {
-        lv_timer_pause(dismiss_timer_);
-    }
 
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr != nullptr) {
@@ -509,11 +538,22 @@ void MainScreen::dismiss_result()
          * buffer, which is never freed, and the placeholder covers the area. */
         lv_obj_add_flag(img_, LV_OBJ_FLAG_HIDDEN);
     }
+    if (image_dir_lbl_ != nullptr) {
+        lv_obj_add_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
+    }
     if (placeholder_ != nullptr) {
         lv_obj_clear_flag(placeholder_, LV_OBJ_FLAG_HIDDEN);
     }
 
-    ESP_LOGI(TAG, "Result dismissed");
+    ESP_LOGI(TAG, "Image cleared: rows, boxes and the image line are off screen");
+}
+
+void MainScreen::dismiss_result()
+{
+    if (!result_up_) return;
+    teardown_result();
+
+    ESP_LOGI(TAG, "Result dismissed (tap)");
     auto cb = dismiss_cb_;
     if (cb) cb();
 }
@@ -529,12 +569,11 @@ void MainScreen::build_rows(const std::list<dl::detect::result_t> &results)
 
     const lv_font_t *font   = ui::font::list();
     const int32_t    line_h = lv_font_get_line_height(font);
-    const int32_t    row_h  = line_h + ui::kMetrics.list_row_gap;
 
-    /* Only as many rows as fit between the picture's top and the divider: the
-     * list must never cross into the message row. */
-    int32_t max_rows = (row_h > 0) ? (layout_.list.h / row_h) : 1;
-    if (max_rows < 1) max_rows = 1;
+    /* Width the name has to wrap inside: the column, less the swatch, the gap
+     * after it, and what the accuracy needs at the right edge. */
+    int32_t text_w = layout_.list.w - ui::kMetrics.swatch - ROW_PAD_COL - ACC_RESERVE_W;
+    if (text_w < 20) text_w = 20;
 
     if (results.empty()) {
         auto *lbl = lv_label_create(list_);
@@ -547,23 +586,46 @@ void MainScreen::build_rows(const std::list<dl::detect::result_t> &results)
 
     int index = 0;
     int shown = 0;
+    int32_t used = 0;   /* what the rows built so far really take, wrapping included */
     for (const auto &r : results) {
-        if (shown >= max_rows) {
+        char buf[64];
+        const char *label = obj::name(static_cast<int>(r.category));
+        if (label != nullptr) {
+            snprintf(buf, sizeof(buf), "%s", label);
+        } else {
+            /* The model's list does not name this index: print the index rather than
+             * invent a class name, and say so once in the log. */
+            snprintf(buf, sizeof(buf), ui::text::kUnknownObjectFormat,
+                     static_cast<int>(r.category));
+            ESP_LOGW(TAG, "Detection %d: category %d is not in the model's class list",
+                     index, static_cast<int>(r.category));
+        }
+
+        /* A long name wraps in the narrow column, so the row's real height is the
+         * wrapped height. Measuring it is what keeps the list inside the image row:
+         * assuming one line per row is how the last row would reach the divider. */
+        lv_point_t text_sz{};
+        lv_txt_get_size(&text_sz, buf, font, 0, 0, text_w, LV_TEXT_FLAG_NONE);
+        int32_t row_h = (text_sz.y > line_h) ? text_sz.y : line_h;
+        if (row_h < 1) row_h = line_h;
+
+        if (used + row_h > layout_.list.h) {
             ESP_LOGW(TAG, "%d detection(s) do not fit the list column",
                      (int)results.size() - shown);
             break;
         }
+        used += row_h + ui::kMetrics.list_row_gap;
 
         const lv_color_t col = lv_color_hex(
             ui::color::kDetection[index % ui::color::kDetectionCount]);
 
         auto *row = lv_obj_create(list_);
         style_plain(row);
-        lv_obj_set_size(row, layout_.list.w, line_h);
+        lv_obj_set_size(row, layout_.list.w, row_h);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_pad_column(row, ROW_PAD_COL, 0);
 
         /* Swatch in the colour of this detection's box. */
         auto *swatch = lv_obj_create(row);
@@ -573,9 +635,6 @@ void MainScreen::build_rows(const std::list<dl::detect::result_t> &results)
         lv_obj_set_style_bg_opa(swatch, LV_OPA_COVER, 0);
 
         /* The object, then the accuracy pushed to the right edge. */
-        char buf[32];
-
-        snprintf(buf, sizeof(buf), ui::text::kObjectFormat, r.category);
         auto *obj = lv_label_create(row);
         lv_label_set_text(obj, buf);
         lv_obj_set_style_text_font(obj, font, 0);
@@ -821,14 +880,6 @@ void MainScreen::on_timer(lv_timer_t *t)
     }
 }
 
-void MainScreen::on_dismiss_timer(lv_timer_t *t)
-{
-    auto *self = static_cast<MainScreen *>(lv_timer_get_user_data(t));
-    if (self == nullptr || self->dismissed_) return;
-    self->dismissed_ = true;
-    self->dismiss_result();
-}
-
 void MainScreen::on_click(lv_event_t *e)
 {
     auto *self = static_cast<MainScreen *>(lv_event_get_user_data(e));
@@ -896,6 +947,18 @@ void MainScreen::apply_show_command(void *arg)
 {
     auto *self = static_cast<MainScreen *>(arg);
     if (self == nullptr || self->status_lbl_ == nullptr) return;
+
+    /* A "cheese" countdown also clears the image: the frame is dropped the moment the
+     * command is detected, so the countdown runs over the white placeholder and the
+     * new frame replaces it when analysis finishes (issue #43). countdown_ > 0 is
+     * exactly "this is a cheese command" — show_command() set it. This runs in the
+     * LVGL task, which is why the clear is here and not in show_command().
+     * teardown_result() is idempotent, so a cheese with no image on screen is a
+     * no-op. */
+    if (self->countdown_ > 0) {
+        self->teardown_result();
+    }
+
     lv_label_set_text(self->status_lbl_, self->status_);
     if (self->message_lbl_ != nullptr) {
         lv_label_set_text(self->message_lbl_, self->message_);

@@ -96,6 +96,10 @@ struct Metrics {
 
     /** Detection colour swatch, pixels. */
     int32_t swatch = 14;
+
+    /** Gap between the picture's bottom edge and the image's own directive line,
+     *  pixels. That line is left-aligned with the picture. */
+    int32_t image_dir_gap = 12;
 };
 
 inline constexpr Metrics kMetrics{};
@@ -114,6 +118,9 @@ inline constexpr const char *kStateWakeWord   = "Listening for wake word...";
 inline constexpr const char *kStateCommand    = "Listening for command...";
 inline constexpr const char *kStatePhoto      = "Taking photo...";
 inline constexpr const char *kStateAnalysing  = "Analysing image...";
+/** REQ-003's no-result wording. The screen does not use it: with no detections
+ *  the state machine is back in command mode and the *list* carries that case
+ *  (kNoDetection). Kept as the SRS string this change reconciles. */
 inline constexpr const char *kStateNoObjects  = "No objects detected";
 inline constexpr const char *kStateCameraStuck = "Camera not responding";
 
@@ -124,18 +131,23 @@ inline constexpr const char *kCountdownFormat = "cheese %d...";
 inline constexpr const char *kDetectedFormat = "\"%s\" detected";
 
 /* ---- Directive line ---- */
+/*  The directives that belong to a *state*. The image has its own line, below. */
 inline constexpr const char *kSayWakeWord = "say \"Hi, ESP\"";
 inline constexpr const char *kSayCommand  = "say \"cheese\"";
-inline constexpr const char *kTapToClose  = "tap to close";
+
+/* ---- The image's own directive line, under the picture ---- */
+inline constexpr const char *kTapToClear = "tap to clear";
 
 /* ---- Detection list ---- */
 /** Shown in the list column when inference returns no objects. */
 inline constexpr const char *kNoDetection = "No Detection";
 
-/** Row text. The detector reports a category index and a score
- *  (dl::detect::result_t); nothing maps those indices to class names yet. */
-inline constexpr const char *kObjectFormat   = "obj %d";
+/** Row text: the model's own class name (object_labels.hpp) and its accuracy. */
 inline constexpr const char *kAccuracyFormat = "%d%%";
+
+/** Fallback for a category the model's list does not name — the index, so a row
+ *  is never blank and no label is invented. */
+inline constexpr const char *kUnknownObjectFormat = "obj %d";
 
 /* ---- Splash (REQ-002) ---- */
 inline constexpr const char *kSplashTitle = "TinyML Demo\n\nVoice Triggered\nObject Detection";
