@@ -6,11 +6,68 @@
 #include "voice_pipeline.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "devkit.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 static constexpr const char *TAG = "voice";
+
+/* ---------------------------------------------------------------------------
+ *  Diagnostic level metering (issue #46)
+ *
+ *  Measurement-only: accumulates the level of the samples on each side of the
+ *  AFE — the raw codec buffer the feed task hands to it, and the single channel
+ *  it hands to MultiNet — and prints one summary line per second. Nothing here
+ *  changes what is fed, detected or dispatched.
+ * ------------------------------------------------------------------------- */
+
+namespace {
+
+constexpr int     kMaxChannels = 4;        /* channels a feed frame may carry */
+constexpr int     kMaxCandidates = 5;      /* MultiNet candidates logged per hit */
+constexpr int64_t kLogPeriodUs = 1000000;  /* one summary line per second */
+constexpr int32_t kFullScale   = 32767;    /* int16 saturation level */
+
+/* Per-channel level accumulator: peak, mean magnitude, full-scale count.
+ * peak is int, not int32_t: int32_t is `long` here, which -Wformat rejects for
+ * %d under IDF's -Werror. */
+struct LevelStats {
+    int64_t samples = 0;
+    int64_t abs_sum = 0;
+    int     peak    = 0;
+    int64_t clipped = 0;
+
+    void add(int16_t sample)
+    {
+        const int32_t mag = sample < 0 ? -static_cast<int32_t>(sample)
+                                       :  static_cast<int32_t>(sample);
+        samples++;
+        abs_sum += mag;
+        if (mag > peak) {
+            peak = mag;
+        }
+        if (mag >= kFullScale) {
+            clipped++;
+        }
+    }
+
+    int mean() const
+    {
+        return samples > 0 ? static_cast<int>(abs_sum / samples) : 0;
+    }
+
+    void reset()
+    {
+        samples = 0;
+        abs_sum = 0;
+        peak    = 0;
+        clipped = 0;
+    }
+};
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 //  Construction
@@ -80,6 +137,21 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
 
     /* Boost AFE output gain for MultiNet */
     afe_config->afe_linear_gain = audio_->afe_linear_gain();
+
+    /* The resolved configuration is the audio path every measurement in this
+     * project is compared against — put it in the log. */
+    ESP_LOGI(TAG, "AFE config: linear_gain=%.2f  agc_mode=%d (init=%d comp=%d dB "
+             "target=%d dBFS)  vad_mode=%d  wakenet_mode=%d  "
+             "pcm: total=%d mic=%d ref=%d rate=%d  fixed_first_ch=%d "
+             "fixed_out_ch=%d",
+             (double)afe_config->afe_linear_gain, (int)afe_config->agc_mode,
+             (int)afe_config->agc_init, afe_config->agc_compression_gain_db,
+             afe_config->agc_target_level_dbfs, (int)afe_config->vad_mode,
+             (int)afe_config->wakenet_mode, afe_config->pcm_config.total_ch_num,
+             afe_config->pcm_config.mic_num, afe_config->pcm_config.ref_num,
+             afe_config->pcm_config.sample_rate,
+             (int)afe_config->fixed_first_channel,
+             (int)afe_config->fixed_output_channel);
 
     if (afe_config->wakenet_model_name != nullptr) {
         ESP_LOGI(TAG, "WakeNet model: %s", afe_config->wakenet_model_name);
@@ -248,6 +320,9 @@ void VoicePipeline::feed_task_fn(void *arg)
         return;
     }
 
+    LevelStats ch_stats[kMaxChannels];      /* diagnostic, one per codec channel */
+    int64_t    last_log_us = esp_timer_get_time();
+
     while (self->task_flag_) {
         esp_err_t ret = self->audio_->read(i2s_buff, buf_len);
         if (ret != ESP_OK) {
@@ -256,6 +331,29 @@ void VoicePipeline::feed_task_fn(void *arg)
             continue;
         }
         self->afe_handle_->feed(self->afe_data_, i2s_buff);
+
+        /* ---- Diagnostic: level at the codec, per channel ---------------- */
+        for (int ch = 0; ch < nch && ch < kMaxChannels; ch++) {
+            for (int i = 0; i < chunk_size; i++) {
+                ch_stats[ch].add(i2s_buff[i * nch + ch]);
+            }
+        }
+
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_log_us >= kLogPeriodUs) {
+            char line[192];
+            int  off = 0;
+            for (int ch = 0; ch < nch && ch < kMaxChannels; ch++) {
+                off += snprintf(line + off, sizeof(line) - static_cast<size_t>(off),
+                                "%sch%d peak=%d mean=%d clip=%lld",
+                                ch == 0 ? "" : "  ", ch,
+                                ch_stats[ch].peak, ch_stats[ch].mean(),
+                                static_cast<long long>(ch_stats[ch].clipped));
+                ch_stats[ch].reset();
+            }
+            ESP_LOGI(TAG, "mic: ch=%d  %s", nch, line);
+            last_log_us = now_us;
+        }
     }
 
     heap_caps_free(i2s_buff);
@@ -372,7 +470,13 @@ void VoicePipeline::detect_task_fn(void *arg)
     self->mn_data_  = model_data;
 
     ESP_LOGI(TAG, "Detect task started");
-    unsigned log_ticks = 0;
+    ESP_LOGI(TAG, "detect: afe fetch chunk=%d  multinet chunk=%d  rate=%d",
+             fetch_chunk, multinet->get_samp_chunksize(model_data),
+             multinet->get_samp_rate(model_data));
+
+    LevelStats out_stats;                   /* diagnostic: what MultiNet is fed */
+    int64_t    last_log_us = esp_timer_get_time();
+    bool       geometry_logged = false;
 
     while (self->task_flag_) {
         afe_fetch_result_t *res = self->afe_handle_->fetch(self->afe_data_);
@@ -381,19 +485,34 @@ void VoicePipeline::detect_task_fn(void *arg)
             continue;
         }
 
-        /* Periodic debug */
-        if (++log_ticks % 100 == 0) {
-            if (self->command_mode_) {
-                ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  mode:CMD  rbuf:%.0f%%  "
-                         "audio[0]:%d",
-                         (double)res->data_volume, res->vad_state,
-                         (double)(res->ringbuff_free_pct * 100.0f),
-                         res->data ? (int)res->data[0] : -1);
-            } else {
-                ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  mode:WAKE  rbuf:%.0f%%",
-                         (double)res->data_volume, res->vad_state,
-                         (double)(res->ringbuff_free_pct * 100.0f));
+        /* ---- Diagnostic: level of the AFE output, peak/mean/clipping ---- */
+        if (res->data != nullptr) {
+            for (int i = 0; i < fetch_chunk; i++) {
+                out_stats.add(res->data[i]);
             }
+        }
+
+        if (!geometry_logged) {
+            ESP_LOGI(TAG, "afe: data_size=%d bytes  raw_data_channels=%d",
+                     res->data_size, res->raw_data_channels);
+            geometry_logged = true;
+        }
+
+        /* Periodic level summary */
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_log_us >= kLogPeriodUs) {
+            ESP_LOGI(TAG, "vol:%.1f dB  vad:%d  mode:%s  rbuf:%.0f%%  "
+                     "audio[0]:%d  peak=%d mean=%d clip=%lld  ch=%d  "
+                     "cache=%d bytes",
+                     (double)res->data_volume, res->vad_state,
+                     self->command_mode_ ? "CMD" : "WAKE",
+                     (double)(res->ringbuff_free_pct * 100.0f),
+                     res->data ? (int)res->data[0] : -1,
+                     out_stats.peak, out_stats.mean(),
+                     static_cast<long long>(out_stats.clipped),
+                     res->trigger_channel_id, res->vad_cache_size);
+            out_stats.reset();
+            last_log_us = now_us;
         }
 
         /* ---- Wake word -------------------------------------------------
@@ -440,6 +559,14 @@ void VoicePipeline::detect_task_fn(void *arg)
                 esp_mn_results_t *mn_result = multinet->get_results(
                     model_data);
                 if (mn_result != nullptr && mn_result->num > 0) {
+                    /* Diagnostic: every candidate the model reported, with its
+                     * score, ahead of the threshold gate below. */
+                    for (int i = 0; i < mn_result->num && i < kMaxCandidates; i++) {
+                        ESP_LOGI(TAG, "mn: TOP%d  id=%d  prob=%.3f",
+                                 i + 1, mn_result->command_id[i],
+                                 (double)mn_result->prob[i]);
+                    }
+
                     float prob = mn_result->prob[0];
                     if (prob >= self->command_threshold_) {
                         int cmd_id = mn_result->command_id[0];
