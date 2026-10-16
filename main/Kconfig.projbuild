@@ -1,8 +1,8 @@
 menu "Devkit selection"
 
-    # Exactly one devkit is compiled in. The selection must agree with the
-    # DEVKIT environment variable, which picks which devkit directory joins the
-    # build and therefore which BSP is pulled in.
+    # Exactly one devkit is compiled in. The selection must agree with the DEVKIT
+    # variable the devkit preset sets, which picks the devkit defaults layered
+    # onto this build's sdkconfig and the devkit component that is compiled.
     choice DEVKIT_SELECT
         prompt "Target devkit"
         default DEVKIT_KORVO1
@@ -10,7 +10,7 @@ menu "Devkit selection"
             The devkit this firmware targets. Selects the devkit component under
             devkits/<name>/ and, with it, the BSP for that board.
 
-            Build with: DEVKIT=<name> idf.py build
+            Build with: idf.py --preset <name> build
 
         config DEVKIT_KORVO1
             bool "ESP32-S31 Korvo-1"

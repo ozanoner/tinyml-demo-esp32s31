@@ -45,3 +45,20 @@ dependencies:
   # publishes there — 9.6.0 and 9.6.0~1 are above the range, and no other 9.5.x
   # exists. Exact, not a range ('~N' is the revision field).
   lvgl/lvgl: "9.5.0"
+
+# ---- No cross-devkit overrides ----------------------------------------------
+# There is deliberately no `overrides` block here.  Two components would need one
+# if both devkits were solved together — esp_video (Korvo BSP ~2.2 vs the
+# ESP-Mosaico camera module ^2.4.1) and esp_codec_dev (Korvo BSP ~1.5 vs the
+# ESP-Mosaico BSP ~1.6, whose onboard/audio.c:83 calls
+# audio_codec_i2c_cfg_t.clock_speed_hz, a 1.6-only field) — but the top-level
+# CMakeLists.txt excludes the other devkit from every build, so each devkit's
+# manifest set contains only one of the two claimants and the solver resolves
+# each devkit's own version set: Korvo-1 gets esp_video 2.2.0 + esp_codec_dev
+# 1.5.x (the set issues #36/#38 were verified against), the ESP-Mosaico gets
+# esp_video 2.5.x + esp_codec_dev 1.6.x (the set issue #35 was verified against).
+#
+# Forcing one version across both is strictly worse: it would hold the
+# ESP-Mosaico camera module — the Mosaico's whole camera path — below the range
+# it declares.  Measured: with the override present, a mosaico solve installed
+# esp_video 2.2.0 against the module's ^2.4.1.

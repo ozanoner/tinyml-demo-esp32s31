@@ -1,14 +1,14 @@
 # ESP-Mosaico — devkit-specific settings.
 #
 # Applied after the project-root sdkconfig.defaults (later file wins). Wired in
-# the top-level CMakeLists.txt through SDKCONFIG_DEFAULTS, which names this file
-# explicitly — IDF does not auto-load a defaults file with this name.
+# CMakePresets.json, whose mosaico preset names this file in SDKCONFIG_DEFAULTS —
+# IDF does not auto-load a defaults file with this name.
 #
 # Values below come from the BSP repository's own examples at the pinned commit
 # (examples/ai_model_gallery, examples/camera_lcd_preview,
 # examples/voice_wake_cmd), not from the board's documentation.
 
-# Selected devkit — must match the DEVKIT environment variable used to build.
+# Selected devkit — must match the DEVKIT the devkit preset sets.
 CONFIG_DEVKIT_MOSAICO=y
 
 # Custom partition table — this devkit's own layout.

@@ -92,23 +92,44 @@ partition).
 ### Build (inside devcontainer)
 
 The project includes a `.devcontainer` with the correct ESP-IDF version.
-Inside the container:
+
+One CMake preset per devkit selects the devkit, its build directory and its
+sdkconfig, so the two devkits build independently — neither build touches the
+other's directory:
 
 ```bash
 cd /project
-DEVKIT=korvo1 idf.py --preview set-target esp32s31
-DEVKIT=korvo1 idf.py build
+idf.py --preset korvo1 build     # -> build/korvo1/tinyml-demo-esp32s31.bin
+idf.py --preset mosaico build    # -> build/mosaico/tinyml-demo-esp32s31.bin
 ```
+
+There is no separate `set-target` step and no `DEVKIT` variable to set: each
+preset carries the chip target (`esp32s31` in both) and its own
+`build/<devkit>/sdkconfig`.
+
+Each build excludes the other devkit (`EXCLUDE_COMPONENTS` in the top-level
+`CMakeLists.txt`), because both BSPs export the same symbols (`bsp_display_new`,
+`bsp_display_lock`, `bsp_touch_new`, …) and a build carrying both fails to link.
+Each devkit therefore resolves its own version set — Korvo-1 gets
+`esp_video 2.2.0` + `esp_codec_dev 1.5.x`, the ESP-Mosaico `esp_video 2.5.x` +
+`esp_codec_dev 1.6.x`, the sets issues #36/#38 and #35 were verified against.
+
+Excluding a component also removes its manifest from the dependency solve, so
+switching devkits re-solves the graph and prunes the other devkit's components
+from `managed_components/` (about 19 of them, re-fetched on that devkit's next
+build — measured at ~80 s). Each devkit's build directory, object files and image
+survive the switch, and there is no `set-target` and no full clean.
 
 ### Flash (app partition only)
 
-The application image is at offset `0x10000`.  Flash baud rate up to 921600:
+The application image is at offset `0x10000`, in the selected devkit's build
+directory.  Flash baud rate up to 921600:
 
 ```bash
 esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
-  0x10000 build/tinyml-demo-esp32s31.bin
+  0x10000 build/korvo1/tinyml-demo-esp32s31.bin
 ```
 
 ### Run the demo
