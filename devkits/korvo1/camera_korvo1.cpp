@@ -249,24 +249,58 @@ public:
             return ESP_FAIL;
         }
 
-        /* ---- 6. Dequeue exactly one frame (500 ms timeout) -------------- */
+        /* ---- 6. Let the sensor's auto-exposure settle, then keep one frame
+         *
+         * A frame taken the moment STREAMON returns is not exposed yet:
+         * measured on this devkit (issue #45), the OV3660's ramp runs
+         * 48 -> 48 -> 93 -> 96 -> 137 (mean luma) over the first frames, so the
+         * detector was being handed a near-black image and correctly reported
+         * nothing in it. Note the ramp starts flat: "two frames agree" is true
+         * of the first two dark frames as well, which is why a minimum number
+         * of frames must pass before agreement counts. Bounded so that a scene
+         * which never settles cannot stall the capture.
+         * ------------------------------------------------------------------ */
         esp_err_t ret = ESP_OK;
         {
-            struct pollfd pfd;
-            memset(&pfd, 0, sizeof(pfd));
-            pfd.fd     = fd;
-            pfd.events = POLLIN;
+            constexpr int kSettleMinFrames    = 5;   /* ramp is converged by here */
+            constexpr int kSettleMaxFrames    = 10;
+            constexpr int kSettleDeltaPercent = 10;
 
-            int pret = poll(&pfd, 1, 500);
-            if (pret <= 0) {
-                if (pret == 0) {
-                    ESP_LOGE(TAG, "VIDIOC_DQBUF timed out after 500 ms");
-                } else {
-                    ESP_LOGE(TAG, "poll() failed: %s", strerror(errno));
+            auto mean_luma = [](const uint8_t *p, uint32_t pixels) {
+                uint32_t sum = 0;
+                for (uint32_t i = 0; i < pixels; i++) {
+                    const uint16_t v = ((uint16_t)p[i * 2] << 8) | p[i * 2 + 1];
+                    const uint32_t r = (v >> 8) & 0xf8;
+                    const uint32_t g = (v >> 3) & 0xfc;
+                    const uint32_t b = (v << 3) & 0xf8;
+                    sum += (r * 77 + g * 150 + b * 29) >> 8;
                 }
-                ret = ESP_FAIL;
-            } else {
-                struct v4l2_buffer buf;
+                return sum / pixels;
+            };
+
+            struct v4l2_buffer buf;
+            uint32_t prev  = 0;
+            uint32_t luma  = 0;
+            int      tries = 0;
+            bool     settled = false;
+
+            for (;;) {
+                struct pollfd pfd;
+                memset(&pfd, 0, sizeof(pfd));
+                pfd.fd     = fd;
+                pfd.events = POLLIN;
+
+                const int pret = poll(&pfd, 1, 500);
+                if (pret <= 0) {
+                    if (pret == 0) {
+                        ESP_LOGE(TAG, "VIDIOC_DQBUF timed out after 500 ms");
+                    } else {
+                        ESP_LOGE(TAG, "poll() failed: %s", strerror(errno));
+                    }
+                    ret = ESP_FAIL;
+                    break;
+                }
+
                 memset(&buf, 0, sizeof(buf));
                 buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
                 buf.memory = V4L2_MEMORY_USERPTR;
@@ -274,29 +308,67 @@ public:
                 if (xioctl(fd, VIDIOC_DQBUF, &buf) != 0) {
                     ESP_LOGE(TAG, "VIDIOC_DQBUF failed: %s", strerror(errno));
                     ret = ESP_FAIL;
-                } else {
-                    uint32_t bytes = (buf.bytesused < img_size) ? buf.bytesused
-                                                                : img_size;
-                    ESP_LOGI(TAG, "Captured: %lu bytes  %lux%lu",
-                             (unsigned long)bytes,
-                             (unsigned long)w, (unsigned long)h);
-
-                    /* The frame lands in whichever slot the driver picked;
-                     * normalise to slot 0, which is what Frame::data names. */
-                    if (buf.index != 0 &&
-                        reinterpret_cast<void *>(buf.m.userptr) != fb_) {
-                        memmove(fb_,
-                                reinterpret_cast<const void *>(buf.m.userptr),
-                                bytes);
-                    }
-
-                    out.data   = fb_;
-                    out.width  = w;
-                    out.height = h;
-                    out.stride = stride;
-                    out.bytes  = img_size;
-                    out.format = FrameFormat::RGB565_BE;
+                    break;
                 }
+
+                /* Address the slot by index. This driver does not return
+                 * m.userptr on DQBUF — it stays as it was passed to QBUF — so
+                 * trusting that field made the hand-over below copy from a null
+                 * pointer and panic (issue #45). */
+                const uint8_t *slot = fb_ + static_cast<size_t>(buf.index) * frame_bytes;
+                luma = mean_luma(slot, w * h);
+                tries++;
+
+                if (tries > 1) {
+                    const uint32_t delta = (luma > prev) ? luma - prev : prev - luma;
+                    settled = (tries >= kSettleMinFrames) &&
+                              (delta * 100) <= (prev * kSettleDeltaPercent);
+                }
+                if (settled || tries >= kSettleMaxFrames) {
+                    break;
+                }
+
+                /* Too early to use: hand the buffer straight back. */
+                prev          = luma;
+                buf.m.userptr = reinterpret_cast<unsigned long>(slot);
+                buf.length    = frame_bytes;
+                if (xioctl(fd, VIDIOC_QBUF, &buf) != 0) {
+                    ESP_LOGE(TAG, "VIDIOC_QBUF failed: %s", strerror(errno));
+                    ret = ESP_FAIL;
+                    break;
+                }
+            }
+
+            if (ret == ESP_OK) {
+                if (settled) {
+                    ESP_LOGD(TAG, "auto-exposure settled after %d frame(s), "
+                             "mean luma %lu", tries, (unsigned long)luma);
+                } else {
+                    ESP_LOGW(TAG, "auto-exposure did not settle within %d frames "
+                             "(mean luma %lu); using the last frame",
+                             kSettleMaxFrames, (unsigned long)luma);
+                }
+
+                uint32_t bytes = (buf.bytesused < img_size) ? buf.bytesused
+                                                            : img_size;
+                ESP_LOGI(TAG, "Captured: %lu bytes  %lux%lu  mean luma %lu",
+                         (unsigned long)bytes,
+                         (unsigned long)w, (unsigned long)h,
+                         (unsigned long)luma);
+
+                /* The frame lands in whichever slot the driver picked;
+                 * normalise to slot 0, which is what Frame::data names. */
+                const uint8_t *src = fb_ + static_cast<size_t>(buf.index) * frame_bytes;
+                if (src != fb_) {
+                    memmove(fb_, src, bytes);
+                }
+
+                out.data   = fb_;
+                out.width  = w;
+                out.height = h;
+                out.stride = stride;
+                out.bytes  = img_size;
+                out.format = FrameFormat::RGB565_BE;
             }
         }
 
@@ -312,13 +384,18 @@ public:
 
     /**
      * Packed RGB888 for the detector, at the captured geometry: R, G, B from
-     * the lowest address (PixelOrder::RGB), written by the loop below.
+     * the lowest address (PixelOrder::RGB), rows written bottom-up.
      *
      * This devkit has no scaler, so the frame's own size is what comes back and
-     * the detector resizes for the model itself — the behaviour the application
-     * had when it converted the frame for itself. Deliberately no flip and no
-     * byte swap: the detector has always seen the frame as the sensor produced
-     * it, and the model is insensitive to the 180-degree rotation.
+     * the detector resizes for the model itself. The RGB565_BE fields are read
+     * directly (no byte swap), but the rows are flipped: the sensor is mounted
+     * upside-down relative to the scene, which is also why to_display() flips.
+     *
+     * Measured on this devkit (issue #45): with the rows flipped, a person in
+     * front of the lens detects as person at 0.88; without the flip the same
+     * frame yields potted plant/bottle/vase/laptop or nothing at all. The model
+     * is NOT insensitive to the rotation — this used to be left unflipped on
+     * that assumption, which is why almost nothing was ever detected.
      */
     esp_err_t to_model_input(const Frame &src, uint32_t want_w, uint32_t want_h,
                              Image &out) override
@@ -342,13 +419,19 @@ public:
             return ret;
         }
 
-        const uint32_t npixels = src.width * src.height;
-        for (uint32_t i = 0; i < npixels; i++) {
-            const uint8_t *s = src.data + i * 2;
-            uint16_t p = ((uint16_t)s[0] << 8) | s[1];
-            rgb_[i * 3 + 0] = (p >> 8) & 0xf8;
-            rgb_[i * 3 + 1] = (p >> 3) & 0xfc;
-            rgb_[i * 3 + 2] = (p << 3) & 0xf8;
+        const uint32_t w            = src.width;
+        const uint32_t h            = src.height;
+        const uint32_t src_stride   = (src.stride != 0) ? src.stride : w * 2u;
+
+        for (uint32_t y = 0; y < h; y++) {
+            const uint8_t *srow = src.data + (size_t)(h - 1 - y) * src_stride;
+            uint8_t       *drow = rgb_ + (size_t)y * w * 3;
+            for (uint32_t x = 0; x < w; x++) {
+                const uint16_t p = ((uint16_t)srow[x * 2] << 8) | srow[x * 2 + 1];
+                drow[x * 3 + 0] = (p >> 8) & 0xf8;
+                drow[x * 3 + 1] = (p >> 3) & 0xfc;
+                drow[x * 3 + 2] = (p << 3) & 0xf8;
+            }
         }
 
         out.data   = rgb_;

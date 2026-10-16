@@ -135,7 +135,7 @@ On the "cheese" command detected by MultiNet, capture a still image from the onb
 - [ ] Frame buffer allocated in PSRAM
 - [ ] Captured frame available in RGB format for both display and detection pipeline
 - [ ] Resolution: QVGA (320×240) or configurable
-- [ ] Capture completes within acceptable latency (< 500 ms)
+- [ ] Capture completes within acceptable latency (< 3 s, including the sensor's auto-exposure warm-up — measured 2.55 s on the Korvo-1)
 
 ---
 
