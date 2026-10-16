@@ -12,9 +12,9 @@ cmake_minimum_required(VERSION 3.22)
 # that devkit and its sdkconfig path (the preset's cache variables), so there is
 # nothing left to keep in sync by hand.
 #
-# DEVKIT comes from the preset, which carries it both as a cache variable and in
-# the environment.  It is then exported back into the environment, because the
-# two passes that need it can only see the environment:
+# DEVKIT arrives as a cache variable, set by the preset — one selector, and no
+# environment variable to keep in sync.  It is then *exported* into the
+# environment, because the passes that consume it can only read the environment:
 #
 #   * IDF's early-expansion pass is a separate `cmake -P` process
 #     (tools/cmake/component.cmake:223-233 -> component_get_requirements.cmake)
@@ -22,16 +22,14 @@ cmake_minimum_required(VERSION 3.22)
 #     sdkconfig exists, so no CONFIG_* value is available either;
 #   * a `cmake --regenerate-during-build` subprocess, which ninja runs whenever a
 #     CMakeLists.txt is newer than build.ninja, has the cache but not the
-#     preset's environment.
+#     preset's command line.
 #
-# The export below is what covers the second case: the regeneration reads DEVKIT
-# from the cache and hands it to its own nested early-expansion process through
-# the environment.  Without it, editing any CMakeLists.txt broke the next build
-# at the guard in main/CMakeLists.txt (measured: touch CMakeLists.txt, then
-# `idf.py --preset mosaico build`).
-if(DEFINED ENV{DEVKIT} AND NOT "$ENV{DEVKIT}" STREQUAL "")
-    set(DEVKIT "$ENV{DEVKIT}" CACHE STRING "Selected devkit, set by the CMake preset" FORCE)
-endif()
+# main/CMakeLists.txt and the devkit components read $ENV{DEVKIT}, and both are
+# processed after this file (the early-expansion include and main's own
+# idf_component_register both happen inside project() below), so the export is
+# what carries the selection to them.  Without it, editing any CMakeLists.txt
+# broke the next build at the guard in main/CMakeLists.txt (measured: touch
+# CMakeLists.txt, then `idf.py --preset mosaico build`).
 if(NOT DEVKIT)
     message(FATAL_ERROR
         "DEVKIT is not set. Build with a devkit preset: idf.py --preset <devkit> build")

@@ -11,9 +11,6 @@
       "displayName": "ESP32-S31 Korvo-1",
       "description": "Builds the Korvo-1 devkit in build/korvo1, with build/korvo1/sdkconfig.",
       "binaryDir": "build/korvo1",
-      "environment": {
-        "DEVKIT": "korvo1"
-      },
       "cacheVariables": {
         "DEVKIT": "korvo1",
         "IDF_TARGET": "esp32s31",
@@ -26,9 +23,6 @@
       "displayName": "ESP-Mosaico",
       "description": "Builds the ESP-Mosaico devkit in build/mosaico, with build/mosaico/sdkconfig.",
       "binaryDir": "build/mosaico",
-      "environment": {
-        "DEVKIT": "mosaico"
-      },
       "cacheVariables": {
         "DEVKIT": "mosaico",
         "IDF_TARGET": "esp32s31",
