@@ -8,7 +8,7 @@ One application, two devkits: the **ESP32-S31-Korvo-1** (800×480) and the **ESP
 
 ![Architecture: one app, two devkits](docs/architecture/architecture.png)
 
-## Supported devkits
+## Hardware
 
 | | ESP32-S31-Korvo-1 | ESP-Mosaico |
 |---|---|---|
@@ -24,7 +24,7 @@ Korvo-1 has a dual-microphone array, the ESP-Mosaico one onboard microphone
 (LMA2718B331-OE1) into its ES8311. Either way the pipeline runs a single channel.
 
 
-## What it does
+## Features
 
 - **Wake word** — WakeNet9 ("Hi, ESP") arms command mode
 - **Command** — MultiNet7 listens for one of 33 registered phrases; only **"cheese"** takes a photo
@@ -33,7 +33,7 @@ Korvo-1 has a dual-microphone array, the ESP-Mosaico one onboard microphone
 - **Result** — the picture with its boxes, a named detection list beside it, and "tap to clear". The
   result stays until you tap or say "cheese" again — there is no auto-dismiss
 
-## Run it in 60 seconds
+## Quick start
 
 Requires Docker and a devkit over USB. Nothing is installed on the host — the toolchain lives in
 the container, and it needs the USB device passed through.
@@ -106,7 +106,7 @@ Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills
 detections appear beside it.
 
 
-## How it is built
+## Architecture
 
 `main/` holds the application: `App` owns and wires everything, `VoicePipeline` runs the two audio
 tasks, `Detector` owns the inference task, `MainScreen` and `Splash` are the LVGL surfaces.
@@ -125,7 +125,7 @@ The runtime path, task by task:
 
 ![Runtime: voice to photo across tasks](docs/architecture/runtime.png)
 
-## Documents
+## Documentation
 
 - [docs/building.md](docs/building.md) — how one app builds for two devkits, flashing, serial logs
 - [docs/requirements.md](docs/requirements.md) — the SRS, with every acceptance criterion marked against the code
