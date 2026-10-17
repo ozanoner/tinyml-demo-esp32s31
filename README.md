@@ -95,7 +95,7 @@ If a capture returns nothing and the wiring looks right, swap RX and TX.
 
 #### Flash in a browser, without a toolchain
 
-The vendor's [firmware-update page](https://mosaico.espressif.com/firmware-update/) can flash the board
+Espressif's [firmware-update page](https://mosaico.espressif.com/firmware-update/) can flash the board
 from Chrome or Edge over Web Serial:
 
 1. Take `merged-mosaico.bin` from the [releases page](https://github.com/ozanoner/tinyml-demo-esp32s31/releases)
