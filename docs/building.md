@@ -295,6 +295,11 @@ So a release takes **two commits**: the code, and a commit on top that refreshes
 stamps them for the tag — pinned to the code commit it sits on, touching nothing except
 `docs/architecture/`, and reviewed like any other change. The tag goes on the stamped commit.
 
+Both commits have to live on the branch the tag is cut from. The pin names a commit, so a pin pointing
+at something that only ever existed on a squash-merged feature branch is not in the released history,
+and the check rejects it — which is the intended behaviour, and the reason the diagram refresh is a
+commit on `main` after the merge rather than the last commit of a PR.
+
 The stamp is one line at the end of each generated diagram page:
 
 ```
