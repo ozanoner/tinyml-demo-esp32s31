@@ -59,14 +59,6 @@ void style_plain(lv_obj_t *obj)
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/* Hand-off to the LVGL task: the detections. The frame itself, with its geometry,
- * is already in the static buffer by the time this is queued (issue #57). */
-struct ResultCtx {
-    MainScreen                     *self;
-    uint32_t                        generation;
-    std::list<dl::detect::result_t> results;
-};
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -105,6 +97,7 @@ MainScreen::MainScreen(devkit::Display *display,
     , staged_stride_(0)
     , staged_bytes_(0)
     , stage_token_(0)
+    , pending_generation_(0)
 {
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr == nullptr) {
@@ -467,7 +460,7 @@ uint32_t MainScreen::stage_frame(const uint8_t *image,
 }
 
 void MainScreen::show_result(uint32_t generation,
-                             const std::list<dl::detect::result_t> &results)
+                             std::list<dl::detect::result_t> results)
 {
     if (display_ == nullptr) {
         ESP_LOGE(TAG, "No display handle — no result");
@@ -478,22 +471,21 @@ void MainScreen::show_result(uint32_t generation,
         return;
     }
 
-    auto *ctx = new (std::nothrow) ResultCtx{this, generation, results};
-    if (ctx == nullptr) {
-        ESP_LOGE(TAG, "OOM for the result hand-off");
-        return;
-    }
-
+    /* Written under the lock the LVGL task holds while it runs the async call, so
+     * the pair below cannot be read half-updated. One result at a time: the next
+     * inference cannot start until the previous callback returned (issue #51), so
+     * nothing overwrites this before it has been applied. */
     const lv_result_t res = [&] {
         if (!lock_lvgl()) return LV_RESULT_INVALID;
-        const lv_result_t r = lv_async_call(apply_result, ctx);
+        pending_generation_ = generation;
+        pending_results_    = std::move(results);
+        const lv_result_t r = lv_async_call(apply_result, this);
         unlock_lvgl();
         return r;
     }();
 
     if (res != LV_RESULT_OK) {
         ESP_LOGE(TAG, "Could not hand the result to the LVGL task");
-        delete ctx;
     }
 }
 
@@ -506,19 +498,18 @@ void MainScreen::on_result_dismissed(dismiss_cb_t cb)
 //  Private — result view (LVGL task)
 // ---------------------------------------------------------------------------
 
-void MainScreen::show_result_now(uint32_t generation,
-                                 const std::list<dl::detect::result_t> &results)
+void MainScreen::show_result_now()
 {
     if (img_ == nullptr || placeholder_ == nullptr || list_ == nullptr) return;
     if (staged_bytes_ == 0 || s_img_buf_ == nullptr) {
         ESP_LOGE(TAG, "No frame staged — the result cannot be shown");
         return;
     }
-    if (generation != stage_token_) {
+    if (pending_generation_ != stage_token_) {
         /* Another cycle staged a newer frame while this one was being inferred:
          * what is in the buffer is not the frame these results describe. */
         ESP_LOGE(TAG, "staged frame replaced (token %lu, staged %lu) — result not shown",
-                 (unsigned long)generation, (unsigned long)stage_token_);
+                 (unsigned long)pending_generation_, (unsigned long)stage_token_);
         return;
     }
 
@@ -557,8 +548,8 @@ void MainScreen::show_result_now(uint32_t generation,
         lv_obj_clear_flag(image_dir_lbl_, LV_OBJ_FLAG_HIDDEN);
     }
 
-    build_rows(results);
-    build_boxes(results);
+    build_rows(pending_results_);
+    build_boxes(pending_results_);
 
     /* Tap anywhere clears it. There is no auto-dismiss (issue #43): the image stays
      * until a tap or the next "cheese". */
@@ -571,7 +562,8 @@ void MainScreen::show_result_now(uint32_t generation,
     result_up_ = true;
 
     ESP_LOGI(TAG, "Result shown: %lux%lu, %u detection(s)",
-             (unsigned long)w, (unsigned long)h, (unsigned)results.size());
+             (unsigned long)w, (unsigned long)h,
+             (unsigned)pending_results_.size());
 }
 
 void MainScreen::teardown_result()
@@ -1030,7 +1022,7 @@ void MainScreen::apply_pause_timer(void *arg)
 
 void MainScreen::apply_result(void *arg)
 {
-    std::unique_ptr<ResultCtx> ctx(static_cast<ResultCtx *>(arg));
-    if (ctx == nullptr || ctx->self == nullptr) return;
-    ctx->self->show_result_now(ctx->generation, ctx->results);
+    auto *self = static_cast<MainScreen *>(arg);
+    if (self == nullptr) return;
+    self->show_result_now();
 }
