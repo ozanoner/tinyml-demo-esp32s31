@@ -45,8 +45,17 @@ def pin_of(artifact: Path) -> str:
     source = artifact.with_suffix(".json")
     if not source.exists():
         raise SystemExit(f"{artifact}: no sibling {source.name} to read the pin from")
-    revision = json.loads(source.read_text(encoding="utf-8"))["meta"]["repository"]["revision"]
-    if not re.fullmatch(r"[0-9a-f]{7,40}", revision):
+    try:
+        raw = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"{source}: cannot read it ({exc.strerror})") from None
+    try:
+        revision = json.loads(raw)["meta"]["repository"]["revision"]
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{source}: not valid JSON (line {exc.lineno}: {exc.msg.rstrip(' at')})") from None
+    except (KeyError, TypeError):
+        raise SystemExit(f"{source}: no meta.repository.revision — is this an archify artifact?") from None
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{7,40}", revision):
         raise SystemExit(f"{source}: revision is not a commit sha: {revision!r}")
     return revision
 
