@@ -117,8 +117,53 @@ building: `sdkconfig` is authoritative and defaults only fill values it does not
 
 ## Flash
 
-Both devkits have **16 MB** flash, and the partition table puts the app in an 8 MB `factory`
-partition at `0x10000`, with a 6 MB `model` partition at `0x810000` for the ESP-SR models.
+Both devkits have **16 MB** flash. The layout is one CSV per devkit, `devkits/<devkit>/partitions.csv`,
+and the two differ by a single line — the ESP-Mosaico adds a `coredump` partition:
+
+```csv
+# devkits/korvo1/partitions.csv — ESP32-S31 Korvo-1
+# Name,   Type, SubType, Offset,  Size,     Flags
+nvs,      data, nvs,     0x9000,  0x4000,
+otadata,  data, ota,     0xd000,  0x2000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 8M,
+model,    data, spiffs,  ,        6M,
+```
+
+```csv
+# devkits/mosaico/partitions.csv — the same five rows, plus:
+coredump, data, coredump, 0xE10000, 64K,
+```
+
+| Partition | Offset | Size | Holds | Which command writes it |
+|---|---|---|---|---|
+| `nvs` | `0x9000` | 16 KB | NVS key/value store — **unused by this app**: nothing calls `nvs_flash_init()` | — |
+| `otadata` | `0xd000` | 8 KB | which slot to boot — always `factory` here, there are no OTA slots | full `flash` |
+| `phy_init` | `0xf000` | 4 KB | RF calibration data | full `flash` / first boot |
+| **`factory`** | `0x10000` | **8 MB** | **the application image** — 7.1 MB on the Korvo-1, 7.3 MB on the ESP-Mosaico, because the YOLO11n model is linked into it, not stored separately | `app-flash` |
+| **`model`** | `0x810000` | **6 MB** | **`srmodels.bin`** — the ESP-SR WakeNet/MultiNet models, ~3.0 MB used, mounted as SPIFFS and read by `esp_srmodel_init("model")` | full `flash` |
+| `coredump` | `0xE10000` | 64 KB | panic dumps — ESP-Mosaico only | — |
+
+### What to flash, and when
+
+| What changed | Command | Why |
+|---|---|---|
+| application code | `app-flash` | only `factory` differs — ~75 s for 7.1 MB |
+| `CONFIG_SR_*` (a different wake word or command model), or `partitions.csv` | full `flash` | `srmodels.bin` is a *new* file; a stale one left on the chip makes the board panic at boot while the model is parsed |
+| the IDF version/toolchain, or anything that changes the bootloader | full `flash` | bootloader and app must come from the same build; an app-only flash on top of a changed bootloader boot-loops |
+| a board that has never been flashed, or after `erase-flash` | full `flash` | there is nothing to preserve |
+| nothing — you only want the console | `monitor` | |
+
+**Why the model partition is usually skipped.** `idf.py flash` passes `--skip-flashed`, so it writes
+only the partitions whose image differs from what is already on the chip. A routine build that
+changed nothing but application code therefore does **not** spend 43 s rewriting the 3 MB model
+partition. Raw `esptool write-flash` has no such check: it writes every image in the list, every
+time. That is the practical reason to prefer `idf.py flash`, and to keep the `esptool` form for
+machines that have no IDF.
+
+Measured on the Korvo-1 over its CP2102N bridge at `-b 921600`: the model partition, 3,052,231 B in
+43 s; the app, 7,137,328 B in 74 s. The ESP-Mosaico's USB-OTG path is slower — the same class of app
+image took 153 s.
 
 **Preferred: let `idf.py` do it**, from inside the container with the devkit's USB port passed
 through (`--device=/dev/ttyUSB0`, or in the DevContainer's `runArgs`):
@@ -130,8 +175,7 @@ idf.py --preset korvo1 -p /dev/ttyUSB0 monitor     # console + panic decoding
 ```
 
 `flash` writes bootloader, partition table, `ota_data`, the ESP-SR models and the app at the offsets
-in `build/<devkit>/flash_args`, and passes `--skip-flashed` so partitions already up to date are not
-rewritten. `app-flash` writes only `0x10000`.
+in `build/<devkit>/flash_args`. `app-flash` writes only `0x10000`.
 
 **The same thing with `esptool` alone** — for a machine that has `esptool` but no IDF (a flash
 runner, a CI box). These are the offsets `idf.py build` prints; the flags come from the same
@@ -155,8 +199,8 @@ esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   0x10000 build/korvo1/tinyml-demo-esp32s31.bin
 ```
 
-An app-only flash on top of a changed bootloader/toolchain boot-loops: the bootloader and the app
-must come from the same build.
+Leaving out `srmodels.bin` from that list is the `app-flash` case: correct as long as the model
+partition already holds the models the current `sdkconfig` selects.
 
 ## Serial logs
 
