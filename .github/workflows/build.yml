@@ -41,42 +41,7 @@ jobs:
 
       - name: Compare the stamp with the tag being released
         run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          commit=""
-          for f in docs/architecture/architecture.html docs/architecture/runtime.html; do
-            line="$(grep -oE '<!-- release: [^ ]+ @ [0-9a-f]{7,40} -->' "$f" || true)"
-            if test -z "$line"; then
-              echo "::error::$f carries no release stamp — refresh and stamp the diagrams in a pre-release commit"
-              exit 1
-            fi
-            ftag="$(sed -E 's/.*release: ([^ ]+) @.*/\1/' <<<"$line")"
-            fcommit="$(sed -E 's/.* @ ([0-9a-f]{7,40}) -->/\1/' <<<"$line")"
-            echo "$f: stamped $ftag @ $fcommit"
-            if test "$ftag" != "$tag"; then
-              echo "::error::$f is stamped for $ftag but this run is $tag — stamp the diagrams for this release"
-              exit 1
-            fi
-            if test -n "$commit" && test "$commit" != "$fcommit"; then
-              echo "::error::the two diagrams record different commits ($commit, $fcommit)"
-              exit 1
-            fi
-            commit="$fcommit"
-          done
-
-          # The stamp says which commit the citations were validated against. If the
-          # tag has moved on from it, the diagrams no longer describe the code.
-          git cat-file -e "${commit}^{commit}" \
-            || { echo "::error::stamped commit $commit is not in this history"; exit 1; }
-          git merge-base --is-ancestor "$commit" "$GITHUB_SHA" \
-            || { echo "::error::stamped commit $commit is not an ancestor of the tag"; exit 1; }
-          changed="$(git diff --name-only "$commit" "$GITHUB_SHA" -- . ":(exclude)docs/architecture")"
-          if test -n "$changed"; then
-            echo "::error::code moved since the diagrams were stamped — refresh them for this tag"
-            echo "$changed"
-            exit 1
-          fi
-          echo "diagrams match $tag; code unchanged since $commit"
+          python3 tools/check_release_stamp.py --tag "$GITHUB_REF_NAME" --ref "$GITHUB_SHA"
 
   build:
     name: build (${{ matrix.devkit }})
@@ -169,17 +134,19 @@ jobs:
           pattern: tinyml-demo-*
           merge-multiple: true
 
-      - name: Create or update the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # No checkout in this job, so gh has no git context to infer the repo from.
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "$tag" --generate-notes
-          fi
-          gh release upload "$tag" dist/* --clobber
-          echo "--- assets on $tag"
-          gh release view "$tag" --json assets --jq '.assets[].name'
+      # Pinned by commit rather than by tag: `v2` is mutable, and this job holds
+      # contents: write. v2.6.2 = 3bb12739c298aeb8a4eeaf626c5b8d85266b0e65.
+      # The action reads GITHUB_REPOSITORY from the environment, so unlike the gh
+      # shell it replaced it needs no checkout and no GH_REPO workaround.
+      - name: Attach the images to the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/*.bin
+            dist/*.espdl
+            dist/*.txt
