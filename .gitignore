@@ -18,8 +18,8 @@ pytest_embedded_log/
 dependencies.lock
 managed_components/
 
-# archify run artefacts (see docs/architecture/README.md) — the generated
-# diagrams and their JSON sources are committed, the receipts are not
+# archify run artefacts — the generated diagrams and their JSON sources are
+# committed, the run receipts are not
 docs/architecture/*.finalize.json
 docs/architecture/*.finalize-summary.json
 docs/architecture/*.browser-check.json
