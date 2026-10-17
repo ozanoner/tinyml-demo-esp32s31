@@ -255,15 +255,18 @@ has to be read through a UART bridge rather than a USB port.
 
 ## Releases
 
-A tag is the release. `v*` starts two workflows, and both can also be started by hand from the
-Actions tab to test them without publishing anything:
+A tag is the release. `v*` starts the build workflow, which can also be started by hand from the
+Actions tab:
 
-| Workflow | What it does | On a tag |
+| | On a tag | Manual run |
 |---|---|---|
-| `build` | builds both presets inside the digest-pinned ESP-IDF image, checks the flash layout the docs promise (`coco_det` must be its own partition, `app-flash` must not write either model), then packages each devkit's images, a merged single image and its `SHA256SUMS` | attaches all of it to the release |
-| `diagrams` | re-pins the architecture diagrams to the commit being released, re-resolves every cited `path:line` against it and re-renders the PNGs | attaches the JSON/HTML/PNG to the release, and fails the tag if a citation no longer resolves |
+| `build` | **validates the committed architecture diagrams first** — every cited `path:line` re-resolved against the revision the diagram pins, the visual gate run, and the whole release refused if code moved since the diagrams were pinned — then builds both presets and attaches the images to the release | builds and uploads the images to the run summary; no diagram validation, no release |
 
-A manual run is identical up to the attach step; its artefacts download from the run summary.
+So a release takes **two commits**: the code, and a commit on top that refreshes the diagrams —
+pinned to the code commit it sits on, and touching nothing except `docs/architecture/`. That second
+commit is reviewed like any other change, and the tag goes on it. The workflow never regenerates a
+diagram: a tag whose diagrams no longer describe its code fails before a single byte is built, with
+the offending paths printed.
 
 Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
 (`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the component graph through the

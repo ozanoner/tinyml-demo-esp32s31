@@ -3,6 +3,11 @@ name: build
 # Builds both devkits and, on a tag, ships the images with the release.
 # workflow_dispatch runs the same build without touching a release — that is the
 # manual test path.
+#
+# On a tag it also *validates* the committed architecture diagrams first and will
+# not build if they do not hold up. Regeneration is not done here: the diagrams are
+# refreshed in a pre-release commit (pin = the code commit it sits on), reviewed,
+# and then tagged. Nothing in this workflow ever writes a diagram back.
 
 on:
   push:
@@ -17,11 +22,95 @@ env:
   # so a release built tomorrow would not be the compiler that built the tested
   # image. Version string behind this digest: ESP-IDF v6.1-dev-8440-gab95e70748f.
   IDF_IMAGE: espressif/idf@sha256:6ad927cfb85a5fea82da64b00960b01adff4fc6019ffcdb18caa3da642d55343
+  # archify is MIT but not on npm (`"private": true`), so its repository is cloned
+  # and pinned by commit. The skill lives at archify/ inside that repository.
+  ARCHIFY_REPO: https://github.com/tt-a1i/archify.git
+  ARCHIFY_COMMIT: 1c2b42d660e4a7571813fb43839c79e3e9ca7720
 
 jobs:
+  diagrams:
+    name: validate diagrams
+    # Release precondition only. On workflow_dispatch this job is skipped and the
+    # build below runs regardless — see its `if:`.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history: the diagrams cite `path:line` at a pinned revision, which has
+      # to be resolvable.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch archify at the pinned commit
+        run: |
+          set -euo pipefail
+          git clone --quiet "$ARCHIFY_REPO" "$RUNNER_TEMP/archify"
+          git -C "$RUNNER_TEMP/archify" checkout --quiet "$ARCHIFY_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/archify" rev-parse HEAD)" = "$ARCHIFY_COMMIT" \
+            || { echo "::error::archify is not at $ARCHIFY_COMMIT"; exit 1; }
+          node "$RUNNER_TEMP/archify/archify/bin/archify.mjs" doctor
+
+      - name: Install a headless browser
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user playwright
+          python3 -m playwright install --with-deps chromium
+          chrome="$(python3 -c 'from playwright.sync_api import sync_playwright as s; print(s().start().chromium.executable_path)')"
+          test -x "$chrome" || { echo "::error::playwright produced no chromium"; exit 1; }
+          # archify's browser-check reads ARCHIFY_CHROME and nothing else: with it
+          # unset the gate reports browser-check:skipped and the run still looks green.
+          printf '#!/bin/sh\nexec "%s" --no-sandbox "$@"\n' "$chrome" \
+            | sudo tee /usr/local/bin/archify-chrome >/dev/null
+          sudo chmod +x /usr/local/bin/archify-chrome
+          /usr/local/bin/archify-chrome --version
+          echo "ARCHIFY_CHROME=/usr/local/bin/archify-chrome" >> "$GITHUB_ENV"
+
+      - name: Check the pin describes this release
+        run: |
+          set -euo pipefail
+          pin="$(python3 -c 'import json; print(json.load(open("docs/architecture/architecture.json"))["meta"]["repository"]["revision"])')"
+          pin2="$(python3 -c 'import json; print(json.load(open("docs/architecture/runtime.json"))["meta"]["repository"]["revision"])')"
+          echo "architecture pins $pin"
+          test "$pin" = "$pin2" || { echo "::error::the two diagrams pin different revisions"; exit 1; }
+          git cat-file -e "${pin}^{commit}" 2>/dev/null \
+            || { echo "::error::pinned revision $pin is not in this history"; exit 1; }
+          git merge-base --is-ancestor "$pin" "$GITHUB_SHA" \
+            || { echo "::error::$pin is not an ancestor of the released commit"; exit 1; }
+          # Only the diagrams may differ between the pin and the tag, otherwise the
+          # citations describe code that has moved.
+          changed="$(git diff --name-only "$pin" "$GITHUB_SHA" -- . ":(exclude)docs/architecture")"
+          if test -n "$changed"; then
+            echo "::error::code changed between the diagram pin and this tag — regenerate the diagrams first"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Re-resolve every citation and run the visual gate
+        run: |
+          set -euo pipefail
+          a="$RUNNER_TEMP/archify/archify/bin/archify.mjs"
+          node "$a" finalize architecture \
+            docs/architecture/architecture.json docs/architecture/architecture.html \
+            --repo-root . --quality showcase
+          node "$a" finalize sequence \
+            docs/architecture/runtime.json docs/architecture/runtime.html \
+            --repo-root . --quality showcase
+          # finalize must not have rewritten the pin to the tag: the pin names the
+          # commit the citations were validated against.
+          python3 tools/set_diagram_revision.py --revision "$(python3 -c 'import json; print(json.load(open("docs/architecture/architecture.json"))["meta"]["repository"]["revision"])')" --check docs/architecture/architecture.json docs/architecture/runtime.json
+
   build:
     name: build (${{ matrix.devkit }})
     runs-on: ubuntu-latest
+    # `diagrams` only runs on a tag, and a skipped dependency must not skip the
+    # build on a manual run.
+    needs: diagrams
+    if: always() && (needs.diagrams.result == 'success' || needs.diagrams.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
