@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Voice to photo — the runtime path across tasks",
+    "locale": "en",
+    "output": "docs/architecture/runtime.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "repository": {
+      "url": "https://github.com/ozanoner/tinyml-demo-esp32s31.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "e7fdf6fcaa45726de996c577f0549e10dfe06774"
+    }
+  },
+  "participants": [
+    {
+      "id": "feed",
+      "type": "backend",
+      "label": "feed task",
+      "sublabel": "core 0 · prio 5",
+      "sources": [
+        {
+          "path": "main/voice_pipeline.cpp",
+          "line": 372,
+          "end_line": 385
+        }
+      ]
+    },
+    {
+      "id": "afe",
+      "type": "backend",
+      "label": "AFE",
+      "sublabel": "ESP-SR · VAD, AEC, NS",
+      "sources": [
+        {
+          "path": "main/voice_pipeline.cpp",
+          "line": 177,
+          "end_line": 216
+        }
+      ]
+    },
+    {
+      "id": "detect",
+      "type": "backend",
+      "label": "detect task",
+      "sublabel": "core 1 · WakeNet/MultiNet",
+      "sources": [
+        {
+          "path": "main/voice_pipeline.cpp",
+          "line": 460,
+          "end_line": 470
+        },
+        {
+          "path": "main/voice_pipeline.cpp",
+          "line": 561,
+          "end_line": 566
+        }
+      ]
+    },
+    {
+      "id": "app",
+      "type": "backend",
+      "label": "App",
+      "sublabel": "callbacks + capture cycle",
+      "sources": [
+        {
+          "path": "main/app.cpp",
+          "line": 273,
+          "end_line": 284
+        },
+        {
+          "path": "main/app.cpp",
+          "line": 316,
+          "end_line": 330
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "MainScreen",
+      "sublabel": "LVGL task · countdown",
+      "sources": [
+        {
+          "path": "main/main_screen.cpp",
+          "line": 184
+        },
+        {
+          "path": "main/main_screen.cpp",
+          "line": 888,
+          "end_line": 900
+        }
+      ]
+    },
+    {
+      "id": "cam",
+      "type": "backend",
+      "label": "Camera",
+      "sublabel": "devkit impl · V4L2",
+      "sources": [
+        {
+          "path": "devkits/korvo1/camera_korvo1.cpp",
+          "line": 136,
+          "end_line": 156
+        }
+      ]
+    },
+    {
+      "id": "det",
+      "type": "backend",
+      "label": "Detector",
+      "sublabel": "inference task · PSRAM",
+      "sources": [
+        {
+          "path": "main/detector.cpp",
+          "line": 54,
+          "end_line": 59
+        },
+        {
+          "path": "main/detector.cpp",
+          "line": 162,
+          "end_line": 170
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 148,
+      "to": 262,
+      "label": "Wake word"
+    },
+    {
+      "from": 272,
+      "to": 412,
+      "label": "Command"
+    },
+    {
+      "from": 420,
+      "to": 680,
+      "label": "Capture, convert, infer, show"
+    }
+  ],
+  "messages": [
+    {
+      "id": "feed-afe",
+      "from": "feed",
+      "to": "afe",
+      "y": 162,
+      "label": "afe_feed(pcm)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "detect-fetch-1",
+      "from": "detect",
+      "to": "afe",
+      "y": 196,
+      "label": "afe_fetch()",
+      "variant": "default",
+      "note": "WakeNet runs in the fetch"
+    },
+    {
+      "id": "wake-detected",
+      "from": "afe",
+      "to": "detect",
+      "y": 252,
+      "label": "WAKENET_DETECTED",
+      "variant": "return"
+    },
+    {
+      "id": "on-wakeword",
+      "from": "detect",
+      "to": "app",
+      "y": 280,
+      "label": "on_wakeword()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "listening",
+      "from": "app",
+      "to": "ui",
+      "y": 310,
+      "label": "status: listening",
+      "variant": "default"
+    },
+    {
+      "id": "detect-fetch-2",
+      "from": "detect",
+      "to": "afe",
+      "y": 340,
+      "label": "afe_fetch()",
+      "variant": "default"
+    },
+    {
+      "id": "chunk",
+      "from": "afe",
+      "to": "detect",
+      "y": 372,
+      "label": "pcm chunk",
+      "variant": "return"
+    },
+    {
+      "id": "on-command",
+      "from": "detect",
+      "to": "app",
+      "y": 404,
+      "label": "on_command(\"cheese\")",
+      "variant": "emphasis"
+    },
+    {
+      "id": "show-command",
+      "from": "app",
+      "to": "ui",
+      "y": 434,
+      "label": "show_command() → 3 s countdown",
+      "variant": "default"
+    },
+    {
+      "id": "countdown-done",
+      "from": "ui",
+      "to": "app",
+      "y": 466,
+      "label": "countdown ends → capture_wq",
+      "variant": "dashed"
+    },
+    {
+      "id": "capture",
+      "from": "app",
+      "to": "cam",
+      "y": 498,
+      "label": "capture()",
+      "variant": "emphasis",
+      "note": "off the LVGL task"
+    },
+    {
+      "id": "frame",
+      "from": "cam",
+      "to": "app",
+      "y": 574,
+      "label": "RGB565_BE frame",
+      "variant": "return"
+    },
+    {
+      "id": "to-model",
+      "from": "app",
+      "to": "cam",
+      "y": 604,
+      "label": "to_model_input()",
+      "variant": "default"
+    },
+    {
+      "id": "rgb888",
+      "from": "cam",
+      "to": "app",
+      "y": 634,
+      "label": "RGB888 320x320",
+      "variant": "return"
+    },
+    {
+      "id": "detect-async",
+      "from": "app",
+      "to": "det",
+      "y": 664,
+      "label": "detect_async()",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Two audio tasks, one AFE",
+      "items": [
+        "The feed task only reads the microphone and pushes chunks into the AFE",
+        "The detect task pulls results out and owns both models' state",
+        "They are pinned to core 0 and core 1 and share the AFE handle"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Nothing heavy on the LVGL task",
+      "items": [
+        "The countdown is an LVGL timer; when it ends it notifies the capture worker",
+        "Capture, conversion and inference all run off the LVGL task",
+        "Cross-task label writes are marshalled with lv_async_call()"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "One frame in flight",
+      "items": [
+        "Detector refuses a second frame while one is being inferred",
+        "The frame is copied once, into the Detector's own RGB888 buffer",
+        "The result callback carries what the model reported, nothing translated"
+      ]
+    }
+  ]
+}

@@ -1,16 +1,23 @@
 # Software Requirements Specification
 ## tinyml-demo-esp32s31
 
-**Version:** 1.0  
-**Project:** TinyML Demo for ESP32-S31 Korvo-1 Devkit  
+**Version:** 1.1  
+**Project:** TinyML Demo for the ESP32-S31 devkits — **ESP32-S31-Korvo-1** and **ESP-Mosaico**  
 **SDK:** ESP-IDF 6.2 development line (preview support for ESP32-S31)
+
+> **Status of this document.** REQ-001 … REQ-008 are implemented and run on both devkits. The
+> acceptance criteria below are marked against the code in this repository during the
+> documentation pass in issue #50, not against the original intent: `- [x]` means the tree meets
+> it, `- [ ]` means it does not, with the reason on the line. Where the shipped behaviour differs
+> from what was written here, the line says how. **The code is the source of truth**; this
+> document records what was agreed and how far it was met.
 
 ---
 
 ## 1. Introduction
 
 ### 1.1 Purpose
-Build an embedded TinyML application for the **ESP32-S31-Korvo-1 devkit** that:
+Build an embedded TinyML application for the **ESP32-S31 devkits** that:
 
 1. **Voice wake-up** — Uses **WakeNet** (ESP-SR) for always-on wake word detection.
 2. **Command detection** — On wake word match, uses **MultiNet** (ESP-SR) to detect the "cheese" command.
@@ -20,9 +27,12 @@ Build an embedded TinyML application for the **ESP32-S31-Korvo-1 devkit** that:
 
 The application demonstrates a complete voice-triggered vision pipeline running fully on-device, with no cloud dependency.
 
+One application builds for either devkit: the devkit preset selects the board support package and
+the `devkit::` implementation, and no application code changes between them.
+
 ### 1.2 Operating Environment
-- **Hardware:** ESP32-S31-Korvo-1 V1.1 devkit
-- **SoC module:** ESP32-S31-WROOM-3 (ESP32-S31 dual-core RISC-V, 16 MB flash, 16 MB PSRAM)
+- **Hardware:** ESP32-S31-Korvo-1 V1.1, or ESP-Mosaico with its camera module
+- **SoC module:** ESP32-S31 (dual-core RISC-V, 16 MB flash, 16 MB PSRAM)
 - **SDK:** ESP-IDF 6.2 development line (preview support for ESP32-S31)
 - **Target:** `esp32s31`
 - **Toolchain:** Docker-based DevContainer (`.devcontainer/devcontainer.json`, image `espressif/idf:latest`)
@@ -39,9 +49,12 @@ The application demonstrates a complete voice-triggered vision pipeline running 
 | YOLO11n | Object detection model shipped by the demo — 320×320 int8, via `espressif/coco_detect` on ESP-DL |
 | BSP | Board Support Package — handles all low-level hardware init |
 | Korvo-1 | ESP32-S31 devkit with camera, LCD, mic, speaker, and audio codec |
+| ESP-Mosaico | ESP32-S31 devkit with a 480×480 LCD and a hot-pluggable camera module |
 | DevContainer | Docker-based development environment (VSCode Dev Containers) |
 | ES8389 | Audio codec on Korvo-1, connected via I2S + I2C |
-| DVP | Digital Video Port — parallel camera interface |
+| ES8311 | Audio codec on ESP-Mosaico, connected via I2S + I2C |
+| DVP | Digital Video Port — parallel camera interface (Korvo-1) |
+| PPA | Pixel Processing Accelerator — the ESP32-S31 block that scales and converts frames |
 
 ---
 
@@ -52,12 +65,12 @@ The application demonstrates a complete voice-triggered vision pipeline running 
 Create the ESP-IDF project skeleton using `idf.py create-project` inside the DevContainer, targeting `esp32s31`.
 
 **Acceptance Criteria:**
-- [ ] Project created with `idf.py create-project tinyml-demo-esp32s31` inside the DevContainer (IDF 6.2)
-- [ ] Chip target set to `esp32s31` via `idf.py set-target esp32s31`
-- [ ] `.devcontainer/devcontainer.json` (single file — no `Dockerfile`, no `docker-compose.yml`) configured for `espressif/idf:latest`
-- [ ] Standard ESP-IDF `.gitignore` — covering `build/`, `sdkconfig`, `__pycache__/`, `.pytest_cache/`, `dependencies.lock`, `pytest_embedded_log/`, etc.
-- [ ] `main/app_main.cpp` prints a boot banner with chip info, SDK version, and free heap
-- [ ] Project compiles successfully: `idf.py build`
+- [x] Project scaffolded with `idf.py create-project` inside the DevContainer (IDF 6.2) — the generated `CMakeLists.txt` / `main/` layout is what the repository still uses
+- [x] Chip target set to `esp32s31` — carried by each preset in `CMakePresets.json` (`IDF_TARGET`), so there is no separate `set-target` step
+- [x] `.devcontainer/devcontainer.json` (single file — no `Dockerfile`, no `docker-compose.yml`) configured for `espressif/idf:latest`
+- [x] Standard ESP-IDF `.gitignore` — covering `build/`, `sdkconfig`, `__pycache__/`, `.pytest_cache/`, `dependencies.lock`, `pytest_embedded_log/`, etc.
+- [x] `main/` prints a boot banner with chip info, SDK version, and free heap (SRAM and PSRAM) — `App::print_banner()` in `main/app.cpp`
+- [x] Project compiles successfully: `idf.py --preset korvo1 build` and `idf.py --preset mosaico build`
 
 ---
 
@@ -65,16 +78,16 @@ Create the ESP-IDF project skeleton using `idf.py create-project` inside the Dev
 
 Add the **ESP32-S31-Korvo-1 BSP** as an IDF component dependency and initialise the board. After boot, display a splash screen for 5 seconds with a demo description message.
 
-The BSP handles all underlying hardware init (audio codec, LCD, touch, camera, SD card, buttons, LED) — no low-level HAL development is needed in this project.
+The BSP handles all underlying hardware init (audio codec, LCD, touch, camera, SD card, buttons, LED) — no low-level HAL development is needed in this project. The ESP-Mosaico BSP is reached the same way, through its own devkit manifest.
 
 **Acceptance Criteria:**
-- [ ] BSP component added via `idf.py add-dependency "espressif/esp32_s31_korvo_1"` from the component registry
-- [ ] Individual BSP init functions called per peripheral (`bsp_i2c_init()`, `bsp_audio_init()`, `bsp_display_start()`, camera via BSP's `esp_video`, etc.) — each returns `esp_err_t`, serving as a hardware self-test
-- [ ] Any init failure is logged with `ESP_LOGE` and `app_main` returns (per error handling NFR)
-- [ ] All peripherals initialised at startup — including camera (OV3660 via `esp_video`), audio, display, touch
-- [ ] LVGL and touch initialised via BSP (GT1151 touch controller)
-- [ ] Splash screen displayed for 5 s (or until tap) showing the message "TinyML Demo — Voice Triggered Object Detection" in large, readable text — use the full 4.3" LCD effectively
-- [ ] Tap anywhere on screen skips the splash immediately and WakeNet listening begins
+- [x] BSP component added as a component-registry dependency — declared in the selected devkit's manifest (`devkits/korvo1/idf_component.yml` → `espressif/esp32_s31_korvo_1` 1.0.1; `devkits/mosaico/idf_component.yml` → `esp-mosaico-bsp`, pinned commit), rather than in `main/`
+- [x] Individual BSP init functions called per peripheral (`bsp_i2c_init()`, `bsp_audio_init()`, `bsp_display_start()`, camera via the BSP's `esp_video`, etc.) — each returns `esp_err_t`, serving as a hardware self-test
+- [ ] Any init failure is logged with `ESP_LOGE` **and `app_main` returns** — the shipped path uses `ESP_ERROR_CHECK()` (`main/app.cpp`), so a fatal peripheral init logs and then aborts rather than returning
+- [x] All peripherals initialised at startup — including the camera (Korvo-1: OV3660 over DVP via `esp_video`; ESP-Mosaico: the left-slot camera module), audio, display, touch
+- [x] LVGL and touch initialised via the BSP — GT1151 on the Korvo-1, CST9220 on the ESP-Mosaico
+- [x] Splash screen displayed for 5 s (or until tap) showing "TinyML Demo / Voice Triggered / Object Detection" (`ui::text::kSplashTitle`), using the full panel
+- [x] Tap anywhere on screen skips the splash immediately and WakeNet listening begins
 
 ---
 
@@ -83,15 +96,16 @@ The BSP handles all underlying hardware init (audio codec, LCD, touch, camera, S
 The application shall display the current operating state on the LCD at all times, so the user always knows what the system is doing. State text shall update instantly with no blank screen gaps between transitions. All display output goes through LVGL (initialised by the BSP in REQ-002).
 
 **Acceptance Criteria:**
-- [ ] The following states are displayed on screen as the application progresses:
+- [x] The following states are displayed on screen as the application progresses — the wording is byte-for-byte the strings in `main/ui_theme.hpp`:
   - "Listening for wake word..."
   - "Listening for command..."
   - "Taking photo..."
   - "Analysing image..."
   - "No Detection" in the detection list (when inference completes with no results — the status line returns to "Listening for command...")
+    — the SRS's own "No objects detected" wording is not used: the list carries the no-result case instead
   - Detection results with bounding box overlay (when objects are found)
-- [ ] State transitions are instant — no blank screen between states
-- [ ] Splash screen (REQ-002) transitions directly into the first state ("Listening for wake word...")
+- [x] State transitions are instant — no blank screen between states; the status and directive lines are written from the LVGL task (or marshalled to it with `lv_async_call`)
+- [x] Splash screen (REQ-002) transitions directly into the first state ("Listening for wake word...") — the main screen is built by the splash's dismissal handler
 
 ---
 
@@ -100,15 +114,15 @@ The application shall display the current operating state on the LCD at all time
 After the BSP initialisation (REQ-002), integrate **ESP-SR** for always-on wake-word detection using the BSP's audio pipeline. The ESP-SR **Audio Front-End (AFE)** shall be initialised first to handle AEC, noise suppression, and audio buffering; WakeNet then sits on top of AFE.
 
 **Acceptance Criteria:**
-- [ ] ESP-SR component (`espressif/esp-sr`) added, supporting ESP32-S31 target (v2.4.6+)
-- [ ] ESP-SR AFE initialised for dual-microphone input at 16 kHz
-- [ ] WakeNet model loaded and initialised — default wake word: **"Hi,ESP"** (`wn9_hiesp`), configurable via `menuconfig`
-- [ ] Continuous audio capture from onboard microphones via the BSP's audio pipeline
-- [ ] On wake word match → callback triggers MultiNet listening phase
-- [ ] **15-second timeout:** if no command detected within 15 s, fall back to WakeNet listening for wake word
-- [ ] Timeout resets / pushes forward during active processing (command detected, capturing, detecting)
-- [ ] A displayed result does **not** suppress that timeout: with a capture on screen the status line still falls back to wake-word listening when it fires, while the image stays (issue #43)
-- [ ] Wake word and detection threshold are configurable via `menuconfig` or code constants
+- [x] ESP-SR component (`espressif/esp-sr`) added, supporting ESP32-S31 target — pinned 2.4.7 in `main/idf_component.yml`
+- [x] ESP-SR AFE initialised at 16 kHz — **mono**, not dual-microphone: the Korvo-1 has a dual-microphone array and the ESP-Mosaico one onboard microphone, but the pipeline runs one channel (`devkits/*/audio_*.cpp` report `afe_mic_format()` = `"M"`)
+- [x] WakeNet model loaded and initialised — wake word **"Hi,ESP"** (`CONFIG_SR_WN_WN9_HIESP=y` in `sdkconfig.defaults`), selectable via `menuconfig`
+- [x] Continuous audio capture from the onboard microphone via the devkit's audio pipeline — a dedicated feed task on core 0
+- [x] On wake word match → callback triggers MultiNet listening phase
+- [x] **15-second timeout:** if no command detected within 15 s, fall back to WakeNet listening for wake word (`xTimerCreate("voice_timeout", pdMS_TO_TICKS(15000), …)`)
+- [x] Timeout resets / pushes forward during active processing (command detected, capturing, detecting)
+- [x] A displayed result does **not** suppress that timeout: with a capture on screen the status line still falls back to wake-word listening when it fires, while the image stays (issue #43)
+- [x] Wake word and detection threshold are configurable — `set_wakenet_threshold(afe_data_, ch, 0.3f)` in `main/voice_pipeline.cpp` (code constants, not `menuconfig`)
 
 ---
 
@@ -117,12 +131,12 @@ After the BSP initialisation (REQ-002), integrate **ESP-SR** for always-on wake-
 After WakeNet detects the wake word, activate **ESP-SR MultiNet** to listen for the "cheese" command. The audio pipeline (already initialised by the BSP in REQ-002) is reused — no additional hardware setup needed.
 
 **Acceptance Criteria:**
-- [ ] ESP-SR MultiNet model loaded and initialised (targeting ESP32-S31, e.g. `mn7_en`)
-- [ ] MultiNet activated on WakeNet wake-word match callback
-- [ ] Pre-defined command "cheese" registered in MultiNet's command set
-- [ ] On "cheese" detected → callback triggers camera capture
-- [ ] On no command within 15 s → fall back to WakeNet (per REQ-004 timeout)
-- [ ] MultiNet confidence threshold is configurable via `menuconfig` or code constants
+- [x] ESP-SR MultiNet model loaded and initialised — `CONFIG_SR_MN_EN_MULTINET7_QUANT=y`, filtered at runtime with `esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH)`
+- [x] MultiNet activated on WakeNet wake-word match callback — created inside the detect task, entered on `WAKENET_CHANNEL_VERIFIED`
+- [x] Command **"cheese"** registered in MultiNet's command set — alongside the model's own 32, so 33 are registered in total and only "cheese" triggers a capture
+- [x] On "cheese" detected → callback triggers camera capture
+- [x] On no command within 15 s → fall back to WakeNet (per REQ-004 timeout)
+- [x] MultiNet confidence threshold is configurable — `multinet->set_det_threshold(model_data, 0.3f)` (code constant, not `menuconfig`)
 
 ---
 
@@ -131,11 +145,11 @@ After WakeNet detects the wake word, activate **ESP-SR MultiNet** to listen for 
 On the "cheese" command detected by MultiNet, capture a still image from the onboard camera. The camera was already initialised at startup by the BSP in REQ-002 — no additional DVP or sensor configuration needed at capture time.
 
 **Acceptance Criteria:**
-- [ ] On "cheese" callback → capture a single still frame from the already-initialised camera
-- [ ] Frame buffer allocated in PSRAM
-- [ ] Captured frame available in RGB format for both display and detection pipeline
-- [ ] Resolution: QVGA (320×240) or configurable
-- [ ] Capture completes within acceptable latency (< 3 s, including the sensor's auto-exposure warm-up — measured 2.55 s on the Korvo-1)
+- [x] On "cheese" callback → capture a single still frame from the already-initialised camera, through the devkit's `devkit::Camera::capture()`
+- [x] Frame buffer allocated in PSRAM (`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`)
+- [x] Captured frame available in RGB for both display and detection pipeline — two conversions, `to_model_input()` and `to_display()`
+- [x] Resolution: **the frame the devkit's camera path produces** — 240×240 on the Korvo-1 (OV3660), 320×180 on the ESP-Mosaico (its PPA scaler only lands on whole 1/16 steps). Not QVGA; the geometry is reported by `devkit::Camera::output_geometry()` and everything downstream derives from it
+- [x] Capture completes without blocking the UI — the cycle runs on a dedicated capture worker task, and the dequeue wait is bounded in the driver (`VIDIOC_S_DQBUF_TIMEOUT`). Capture itself is not separately timed in the log; the `CVT:` and `INF:` lines time the conversions and the inference
 
 ---
 
@@ -144,15 +158,13 @@ On the "cheese" command detected by MultiNet, capture a still image from the onb
 Run object detection on the captured camera frame using **YOLO11n** (320×320, int8) through the **coco_detect** component on **ESP-DL** (v3.3.8+, supports `esp32s31` target). The image is already in PSRAM from REQ-006 — pass it to the inference pipeline.
 
 **Acceptance Criteria:**
-- [ ] ESP-DL component added (`espressif/esp-dl` ≥ v3.3.8)
-- [ ] YOLO11n model loaded (pre-quantized `.espdl`, via `espressif/coco_detect` 0.4.0)
-- [ ] Model input tensor populated from camera frame buffer
-- [ ] Inference runs on-device (no cloud)
-- [ ] Detection results: bounding boxes, class labels, confidence scores
-- [ ] Top-N detections (N configurable, default 2) kept for display
-- [ ] Inference completes within acceptable latency (< 5 s)
-
-**Fallback:** If YOLO26n is not functional on ESP32-S31, use **ESP-Detection (YOLOv11 pico)** via ESP-DL — a lighter model (0.36M params, ~126 ms on S3) sharing the same ESP-DL runtime.
+- [x] ESP-DL component added — pinned `espressif/esp-dl` 3.3.8 in `main/idf_component.yml`
+- [x] YOLO11n model loaded (pre-quantized, via `espressif/coco_detect` 0.4.0) — `COCODetect(YOLO11N_320_S8_V1, false)`, linked into the application image rather than a separate partition
+- [x] Model input tensor populated from the camera frame buffer
+- [x] Inference runs on-device (no cloud) — in a dedicated PSRAM-backed FreeRTOS task
+- [x] Detection results: bounding boxes, class labels, confidence scores
+- [ ] Top-N detections (N configurable, default 2) kept for display — **not implemented**: every detection that fits the list column is shown, and the count is whatever the model returned
+- [x] Inference completes within acceptable latency (< 5 s) — ≈2.3 s on the Korvo-1 at 240×240 and ≈1.9 s on the ESP-Mosaico at 320×180, from the `INF:` lines the detector logs per capture
 
 ---
 
@@ -161,12 +173,12 @@ Run object detection on the captured camera frame using **YOLO11n** (320×320, i
 Display the captured camera frame on the LCD, overlaid with object detection bounding boxes, labels, and confidence scores (from REQ-007). The BSP already initialised display, LVGL, and touch in REQ-002.
 
 **Acceptance Criteria:**
-- [ ] Captured camera frame rendered as background image on the LCD
-- [ ] Detection bounding boxes drawn as coloured rectangles overlaid on the image
-- [ ] Each detection shown as its **object name and confidence score** in the list beside the image, colour-matched to its bounding box by a swatch. The name is the model's own class list (80 COCO classes); a class the list does not know shows its index and is logged, never an invented name
-- [ ] No-detection case: "No Detection" in the detection list
-- [ ] **The result persists — there is no auto-dismiss.** The frame, its boxes and its list stay on screen with "tap to clear" under the picture until the user clears them
-- [ ] Tap anywhere clears the result immediately and returns to WakeNet listening. Detecting "cheese" also clears it, at the moment the command is detected, so the countdown runs over the white placeholder
+- [x] Captured camera frame rendered as background image on the LCD
+- [x] Detection bounding boxes drawn as coloured rectangles overlaid on the image
+- [x] Each detection shown as its **object name and confidence score** in the list beside the image, colour-matched to its bounding box by a swatch. The name is the model's own class list (80 COCO classes); a class the list does not know shows its index and is logged, never an invented name
+- [x] No-detection case: "No Detection" in the detection list
+- [x] **The result persists — there is no auto-dismiss.** The frame, its boxes and its list stay on screen with "tap to clear" under the picture until the user clears them
+- [x] Tap anywhere clears the result immediately and returns to WakeNet listening. Detecting "cheese" also clears it, at the moment the command is detected, so the countdown runs over the white placeholder
 
 ---
 
@@ -182,23 +194,23 @@ Display the captured camera frame on the LCD, overlaid with object detection bou
   - **Noise Suppression:** enabled
   - **VAD Model (VADNet):** off unless required by the audio pipeline
   - **Speech Synthesis:** off (not used)
-- ESP-DL will only include the YOLO26n `.espdl` model file (or YOLOv11 fallback)
+- ESP-DL includes the YOLO11n `.espdl` model that `espressif/coco_detect` ships; nothing else
 
 **Model storage (flash):**
-- A `model` partition shall be defined in `partitions.csv` with sufficient size for the selected models (typically 6 MB for ESP-SR models)
-- Models are flashed to this partition via `idf.py flash` — not embedded in the application binary
+- A `model` partition is defined in each devkit's `partitions.csv` with 6 MB for the ESP-SR models
+- Those models are flashed to that partition — they are not part of the application binary. The YOLO11n model is the opposite: `coco_detect` links it into the app image, in the 8 MB `factory` partition
 
 **Runtime memory allocation:**
-- **SRAM (512 KB internal):** reserved for time-critical audio paths:
+- **SRAM (internal):** reserved for time-critical audio paths:
   - WakeNet inference buffers
   - Audio pipeline ring buffers
-  - RTOS kernel, stacks, Wi-Fi/BT
+  - RTOS kernel, stacks
 - **PSRAM (16 MB):** for large, less latency-sensitive data:
-  - Camera frame buffer(s) (RGB, e.g. ~230 KB at QVGA)
+  - Camera frame buffer(s) and the display/detector conversions
   - YOLO/ESP-DL tensor arena and weight buffers
   - LVGL framebuffer / draw buffers
-  - MultiNet inference buffers (if model is too large for SRAM)
-- ESP-DL's static memory planner shall be configured with an appropriate internal SRAM budget; the rest is automatically allocated to PSRAM
+  - The voice pipeline's two task stacks
+- ESP-DL's static memory planner is configured with an internal SRAM budget; the rest goes to PSRAM
 
 ### 3.2 Memory Monitoring
 
@@ -208,27 +220,29 @@ After each major software component initialises (BSP, WakeNet, MultiNet, camera,
 - Largest free heap block
 - **Warning** if either SRAM or PSRAM usage exceeds 80% of available capacity
 
+*Shipped as `App::print_memory_summary()`, called after each bring-up stage (`I2C`, `AUDIO`, `DISPLAY+LVGL`, `CAMERA`, `DETECTOR`, `VOICE`).*
+
 ### 3.3 Performance Logging
 
-Where applicable, inference / capture timing shall be printed to UART for observability:
-- **WakeNet:** time per detection frame (ms)
-- **MultiNet:** time per recognition frame (ms)
-- **Camera:** frame capture time (ms)
-- **YOLO/ESP-DL:** pre-process, inference, and post-process times (ms) — reported individually
+Where applicable, timing shall be printed to UART for observability:
+- **Camera conversions:** one `CVT:` line per capture, with the produced geometry
+- **YOLO/ESP-DL:** one `INF:` line per inference, with the detection count
+- Pre-process, inference and post-process are **not** reported individually — inference is one call into `COCODetect::run()`
+- **Audio path diagnostics:** behind `CONFIG_AUDIO_METRICS` (off by default), the pipeline logs per-channel peak/mean/clipped levels
 
 ### 3.4 Error Handling
 
 - All errors shall be logged with `ESP_LOGE` (not `ESP_LOGW` or `ESP_LOGI`)
-- **Init phase errors** (BSP init, WakeNet model load, MultiNet model load, camera init, ESP-DL init): print the error and return from `app_main` (system halts)
+- **Init phase errors** (BSP init, WakeNet model load, MultiNet model load, camera init, ESP-DL init): log and stop — the shipped path uses `ESP_ERROR_CHECK()` for peripheral init, which aborts
 - **Operation phase errors** (inference failure, capture failure): skip the current operation cycle and return to WakeNet wake-word listening — do not halt the system
 
 ### 3.5 Development Language & Architecture
 
 - **Language:** C++17
 - **Architecture:** Modern object-oriented principles with clear separation of concerns
-- Each logical part shall be encapsulated in a class (e.g. `AudioPipeline`, `WakeWordDetector`, `CommandDetector`, `Camera`, `ObjectDetector`, `AppStateMachine`)
-- **Hardware configurability:** Hardware selection (board type, BSP variant) shall be done through configuration only (`menuconfig` / `sdkconfig`). The application code shall not contain board-specific logic — changing the target hardware must not require source code changes.
-- Automated unit / integration tests are **deferred** — not in scope for this project
+- Each logical part is encapsulated in a class: `App`, `VoicePipeline`, `Detector`, `MainScreen`, `Splash`, and the devkit interfaces `Board` / `Audio` / `Display` / `Camera`
+- **Hardware configurability:** the devkit is selected by the build preset (`CMakePresets.json`) — `idf.py --preset korvo1|mosaico`. The application code contains no board-specific logic: it talks to `components/devkit_api`, and each devkit provides the implementation
+- Automated unit / integration tests are **deferred** — tracked as a release-checklist item in issue #49
 
 ---
 
@@ -236,25 +250,24 @@ Where applicable, inference / capture timing shall be printed to UART for observ
 
 | # | Scenario | Current behaviour | Potential issue | Proposed handling |
 |---|----------|-------------------|----------------|-------------------|
-| EC-001 | "cheese" detected while already processing a previous capture/detect/display cycle | No guard against re-entry — could double-trigger | Both cycles run in parallel, memory corruption, display flicker | Skip the second command — ignore "cheese" if already in a capture/detect/display cycle |
+| EC-001 | "cheese" detected while already processing a previous capture/detect/display cycle | **Guarded** — the capture worker sets `cb_busy_` and refuses a second trigger while one is in flight; `Detector` refuses a frame while an inference is running. The screen reports "Camera not responding" instead of queueing | A refused cycle looks like a camera fault to the user | Keep the guard; report the refused cycle distinctly from a camera error |
 | EC-002 | User taps screen during "Analysing image" or "Taking photo" state | Tap should dismiss or advance | Interrupts processing mid-way, unpredictable state | Ignore — no action taken during active processing states |
 | EC-003 | User says wake word ("Hi ESP") while already in an active cycle (not in "Listening for wake word" state) | Audio fed to WakeNet — could trigger a second detection | Double wake word confuses state machine, could launch parallel cycles | Ignore during active cycle — audio data shall not be fed to any model when in an invalid state |
-| EC-004 | Camera fails to capture frame (sensor timeout, frame not ready) | No error recovery specified | App stuck waiting for frame | Skip cycle: log error, return to WakeNet listening (per NFR 3.4) |
-| EC-005 | YOLO inference exceeds acceptable latency | Hard limit of 5 s specified | Inference hangs, app freezes | Use a timeout (max 5 s). If exceeded, abort inference, log error, and return to WakeNet listening. |
+| EC-004 | Camera fails to capture frame (sensor timeout, frame not ready) | The dequeue wait is bounded in the driver; a frameless capture fails and is logged, and the UI returns to the wake-word state | App stuck waiting for frame | Skip cycle: log error, return to WakeNet listening (per NFR 3.4) |
+| EC-005 | YOLO inference exceeds acceptable latency | No timeout around the inference call itself | Inference hangs, app freezes | Use a timeout (max 5 s). If exceeded, abort inference, log error, and return to WakeNet listening. |
 | EC-006 | PSRAM allocation failure at startup (camera buffer, YOLO tensor arena) | App exits with ESP_LOGE | App won't run on boards with insufficient PSRAM | **Deal-breaker** — must be solved before release. Not acceptable as runtime behaviour. |
-| EC-007 | Touch controller becomes unresponsive at runtime (not init failure) | Tap gesture never fires — user cannot manually dismiss | App relies solely on timeouts to progress states | Accept degraded behaviour — splash auto-advances at 5 s, results auto-advance at 10 s |
+| EC-007 | Touch controller becomes unresponsive at runtime (not init failure) | Tap gesture never fires — the user cannot manually clear a result | App relies solely on timeouts to progress states | Accept degraded behaviour — the splash auto-advances at 5 s; a **result does not auto-advance**, it stays until the next "cheese" (issue #43) |
 
 ## 5. Revision History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | TBD | Ozan | Initial draft |
+| 1.1 | 2026-10-17 | Ozan | Claims corrected against the tree; acceptance criteria marked against the implementation; second devkit (ESP-Mosaico) reflected (issue #50) |
 
 ---
 
 ## 6. References
 
-- [ESP32-S31-Korvo-1 User Guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-korvo-1/user_guide.html)
-- [ESP32-S31-Korvo-1 BSP (esp-bsp)](https://github.com/espressif/esp-bsp/tree/master/bsp/esp32_s31_korvo_1)
-- [ESP32-S31-Korvo-1 BSP Compatible Examples](https://github.com/espressif/esp-bsp/tree/master/bsp/esp32_s31_korvo_1#compatible-bsp-examples)
-- [ESP32-S31-Korvo-1 BSP Component Registry](https://components.espressif.com/components/espressif/esp32_s31_korvo_1)
+See the per-devkit reference list in the [README](../README.md#references) — the SRS no longer keeps
+its own copy, so the two cannot drift apart.

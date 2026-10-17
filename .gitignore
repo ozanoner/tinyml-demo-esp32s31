@@ -17,3 +17,11 @@ pytest_embedded_log/
 # idf-component-manager output
 dependencies.lock
 managed_components/
+
+# archify run artefacts — the generated diagrams and their JSON sources are
+# committed, the run receipts are not
+docs/architecture/*.finalize.json
+docs/architecture/*.finalize-summary.json
+docs/architecture/*.browser-check.json
+docs/architecture/*.delivery.json
+docs/architecture/review-*/
