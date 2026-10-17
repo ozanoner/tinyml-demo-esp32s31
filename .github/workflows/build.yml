@@ -134,11 +134,11 @@ jobs:
           pattern: tinyml-demo-*
           merge-multiple: true
 
-      # Latest release of the action at the time of writing. v3 moved the runtime from
-      # Node 20 to Node 24 (no input changes); v2.6.2 is the last Node 20 line. `v3` is
-      # the floating major tag if you would rather track 3.x automatically.
+      # Floating major tag: picks up 3.x fixes without a change here. At the time of
+      # writing `v3` and `v3.0.3` have identical trees (compare API: identical, 0 ahead);
+      # v2.6.2 is the last Node 20 line if Node 24 ever becomes a problem.
       - name: Attach the images to the release
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
