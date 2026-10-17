@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TinyML Demo — ESP32-S31, one app for two devkits",
+    "locale": "en",
+    "output": "docs/architecture/architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/ozanoner/tinyml-demo-esp32s31.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "e7fdf6fcaa45726de996c577f0549e10dfe06774"
+    }
+  },
+  "components": [
+    {
+      "id": "hw",
+      "type": "external",
+      "label": "Devkit hardware",
+      "sublabel": "LCD+touch · mic+codec · camera",
+      "pos": [40, 215],
+      "size": [150, 88],
+      "sources": [
+        { "path": "devkits/korvo1/board_korvo1.cpp", "line": 23, "end_line": 30 },
+        { "path": "devkits/mosaico/board_mosaico.cpp", "line": 1 }
+      ]
+    },
+    {
+      "id": "korvo1",
+      "type": "backend",
+      "label": "korvo1",
+      "sublabel": "Korvo-1 BSP 1.0.1 + DVP patch",
+      "tag": "OV3660 · 240x240",
+      "pos": [250, 110],
+      "size": [190, 88],
+      "sources": [
+        { "path": "devkits/korvo1/idf_component.yml", "line": 14, "end_line": 16 },
+        { "path": "devkits/korvo1/CMakeLists.txt", "line": 70, "end_line": 108 }
+      ]
+    },
+    {
+      "id": "video",
+      "type": "backend",
+      "label": "esp_video",
+      "sublabel": "V4L2 capture · esp_cam_sensor",
+      "tag": "BSP-owned",
+      "pos": [250, 250],
+      "size": [190, 76],
+      "sources": [
+        { "path": "devkits/korvo1/camera_korvo1.cpp", "line": 136, "end_line": 156 }
+      ]
+    },
+    {
+      "id": "mosaico",
+      "type": "backend",
+      "label": "mosaico",
+      "sublabel": "esp-mosaico-bsp @ c32332e",
+      "tag": "module cam · 320x180",
+      "pos": [250, 380],
+      "size": [190, 88],
+      "sources": [
+        { "path": "devkits/mosaico/idf_component.yml", "line": 29, "end_line": 40 }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "devkit_api",
+      "sublabel": "Board · Audio · Display · Camera",
+      "pos": [530, 220],
+      "size": [170, 110],
+      "sources": [
+        { "path": "components/devkit_api/include/devkit.hpp", "line": 1, "end_line": 6 },
+        { "path": "components/devkit_api/include/devkit/audio.hpp", "line": 20 },
+        { "path": "components/devkit_api/include/devkit/camera.hpp", "line": 98 }
+      ]
+    },
+    {
+      "id": "app",
+      "type": "backend",
+      "label": "App",
+      "sublabel": "owns and wires every object",
+      "pos": [760, 40],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/app.hpp", "line": 67, "end_line": 75 },
+        { "path": "main/app.cpp", "line": 60, "end_line": 68 }
+      ]
+    },
+    {
+      "id": "splash",
+      "type": "frontend",
+      "label": "Splash",
+      "sublabel": "boot screen · tap or 5 s",
+      "pos": [760, 150],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/splash.cpp", "line": 21, "end_line": 51 }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "MainScreen",
+      "sublabel": "picture · list · status · countdown",
+      "pos": [760, 260],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/main_screen.hpp", "line": 60 },
+        { "path": "main/main_screen.cpp", "line": 808, "end_line": 820 }
+      ]
+    },
+    {
+      "id": "voice",
+      "type": "backend",
+      "label": "VoicePipeline",
+      "sublabel": "AFE + WakeNet9 + MultiNet7, 2 tasks",
+      "pos": [760, 370],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/voice_pipeline.cpp", "line": 163, "end_line": 216 },
+        { "path": "main/voice_pipeline.cpp", "line": 253, "end_line": 270 }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "backend",
+      "label": "Detector",
+      "sublabel": "one inference at a time · PSRAM task",
+      "pos": [760, 480],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/detector.cpp", "line": 54, "end_line": 59 },
+        { "path": "main/detector.hpp", "line": 52 }
+      ]
+    },
+    {
+      "id": "lvgl",
+      "type": "frontend",
+      "label": "LVGL 9.5.0",
+      "sublabel": "esp_lvgl_port 2.9.0",
+      "pos": [1080, 150],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/idf_component.yml", "line": 47 },
+        { "path": "main/main_screen.cpp", "line": 112, "end_line": 137 }
+      ]
+    },
+    {
+      "id": "espsr",
+      "type": "backend",
+      "label": "ESP-SR 2.4.7",
+      "sublabel": "AFE · WakeNet9_HIESP · MultiNet7",
+      "pos": [1080, 370],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/idf_component.yml", "line": 35 },
+        { "path": "main/voice_pipeline.cpp", "line": 460, "end_line": 470 }
+      ]
+    },
+    {
+      "id": "espdl",
+      "type": "backend",
+      "label": "ESP-DL 3.3.8",
+      "sublabel": "coco_detect 0.4.0 · YOLO11n int8",
+      "pos": [1080, 480],
+      "size": [200, 76],
+      "sources": [
+        { "path": "main/idf_component.yml", "line": 36, "end_line": 37 }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Application — main/",
+      "wraps": ["app", "splash", "ui", "voice", "detector"],
+      "pad": 18
+    },
+    {
+      "kind": "region",
+      "label": "components/devkit_api — the only board-specific seam",
+      "wraps": ["api"],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "board support — one devkit per build",
+      "wraps": ["korvo1", "video", "mosaico"],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "third-party components",
+      "wraps": ["lvgl", "espsr", "espdl"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    { "from": "hw", "to": "korvo1", "label": "board init", "fromSide": "right", "toSide": "left" },
+    { "from": "hw", "to": "mosaico", "label": "board init", "fromSide": "right", "toSide": "left" },
+    { "from": "korvo1", "to": "api", "label": "realizes", "fromSide": "right", "toSide": "left" },
+    { "from": "mosaico", "to": "api", "label": "realizes", "fromSide": "right", "toSide": "left" },
+    { "from": "app", "to": "api", "label": "create() + inject", "fromSide": "left", "toSide": "top" },
+    { "from": "voice", "to": "api", "label": "Audio::read()", "variant": "emphasis", "fromSide": "left", "toSide": "right" },
+    { "from": "ui", "to": "api", "label": "Display · Camera", "variant": "emphasis", "fromSide": "left", "toSide": "right" },
+    { "from": "splash", "to": "lvgl", "label": "widgets", "fromSide": "right", "toSide": "left" },
+    { "from": "ui", "to": "lvgl", "label": "widgets · flush", "fromSide": "right", "toSide": "left" },
+    { "from": "voice", "to": "espsr", "label": "feed · detect", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "from": "detector", "to": "espdl", "label": "detect->run()", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "from": "korvo1", "to": "video", "label": "V4L2", "fromSide": "bottom", "toSide": "top" },
+    { "from": "mosaico", "to": "video", "label": "V4L2", "fromSide": "top", "toSide": "bottom" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Runtime — who owns what",
+      "items": [
+        "feed task, core 0, prio 5 — blocks on Audio::read(), feeds the AFE",
+        "detect task, core 1, prio 5 — creates MultiNet, runs WakeNet + MultiNet",
+        "inference task, prio 5, 8 KB PSRAM stack — created by the first capture",
+        "capture_wq, prio 2, 8 KB — camera capture off the LVGL task",
+        "LVGL port task — splash, screen, countdown timer, splash timer"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "One app, two boards",
+      "items": [
+        "CMakePresets.json sets DEVKIT + its own build dir and sdkconfig",
+        "main/ REQUIRES devkit_api and only the selected devkit component",
+        "EXCLUDE_COMPONENTS drops the other devkit: both BSPs export the same symbols",
+        "models load from the 6 MB 'model' SPIFFS partition, not the app image"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Voice → photo",
+      "items": [
+        "WakeNet9 spots \"Hi, ESP\", MultiNet7 then listens for a command",
+        "33 commands are registered; only \"cheese\" triggers a capture",
+        "a 3 s countdown, then capture, conversion and one YOLO11n 320x320 pass"
+      ]
+    }
+  ]
+}

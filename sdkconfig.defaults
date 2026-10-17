@@ -7,7 +7,7 @@
 
 # LVGL — Montserrat type scale used by the UI (main/ui_theme.hpp).
 # 28 — status line (the state, and the countdown)
-# 20 — directive line ("say ...", "tap to close")
+# 20 — directive line ("say ...", "tap to clear")
 # 14 — detection list rows, LVGL's own default
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
