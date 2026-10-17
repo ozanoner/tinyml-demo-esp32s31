@@ -74,6 +74,10 @@ the file and line range that proves it. They are **generated files** — edit th
 | `architecture` | [architecture.png](docs/architecture/architecture.png) | [architecture.html](docs/architecture/architecture.html) | What the system is made of: the application layer, `components/devkit_api` as the only board seam, the two devkit implementations, `esp_video`, and the third-party stack |
 | `runtime` | [runtime.png](docs/architecture/runtime.png) | [runtime.html](docs/architecture/runtime.html) | Where data crosses tasks: feed → AFE → detect → command → countdown → capture → conversions → inference → screen |
 
+The runtime path, task by task:
+
+![Runtime: voice to photo across tasks](docs/architecture/runtime.png)
+
 GitHub does not render an `.html` blob, so the interactive files open through htmlpreview — replace
 `github.com` with `htmlpreview.github.io/?` in the blob URL:
 
