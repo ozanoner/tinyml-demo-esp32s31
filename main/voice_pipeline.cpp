@@ -15,6 +15,11 @@
 
 static constexpr const char *TAG = "voice";
 
+/* Static TCBs: internal DRAM, required by xPortCheckValidTCBMem — see the note in
+ * voice_pipeline.hpp. The stacks are allocated per instance from PSRAM instead. */
+StaticTask_t VoicePipeline::feed_tcb_;
+StaticTask_t VoicePipeline::detect_tcb_;
+
 /* ---------------------------------------------------------------------------
  *  Diagnostic level metering (issue #46) - built only when CONFIG_AUDIO_METRICS
  *  is set (issue #53)
@@ -95,6 +100,8 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
       feed_task_(nullptr),
       detect_task_(nullptr),
       task_flag_(0),
+      feed_stack_(nullptr),
+      detect_stack_(nullptr),
       command_mode_(false),
       timeout_timer_(nullptr),
       on_wakeword_(std::move(on_wakeword)),
@@ -103,6 +110,38 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
       command_threshold_(0.0f)
 {
     ESP_LOGI(TAG, "Voice pipeline starting...");
+
+    /* ---- 0. Task stacks, before the AFE takes its share ---------------
+     * The original failure was an 8 KB *contiguous internal* request made at the
+     * moment of task creation — after the AFE's ~68 KB, where it succeeded only
+     * 4 boots in 5 (issue #63). Here the same two blocks are taken while the
+     * internal heap is still roomy, and creation itself is static, so the fragile
+     * request no longer exists.
+     *
+     * They are internal, not PSRAM, on measured grounds: with PSRAM stacks the AFE
+     * started 16 KB richer, took it, and the display lost its per-flush DMA bounce
+     * buffer ("spicommon_dma_setup_priv_buffer: Failed to allocate priv TX buffer",
+     * then "Draw bitmap failed: ESP_ERR_NO_MEM") — the screen stopped updating. The
+     * SPI driver bounces every PSRAM-sourced colour transfer through internal DMA
+     * memory (spi_master.c:1226), so the display's claim on internal RAM is
+     * permanent, not an init-time cost. */
+    if (feed_stack_ == nullptr) {
+        feed_stack_ = static_cast<StackType_t *>(
+            heap_caps_malloc(TASK_STACK_UNITS * sizeof(StackType_t), MALLOC_CAP_INTERNAL));
+        detect_stack_ = static_cast<StackType_t *>(
+            heap_caps_malloc(TASK_STACK_UNITS * sizeof(StackType_t), MALLOC_CAP_INTERNAL));
+        if (feed_stack_ == nullptr || detect_stack_ == nullptr) {
+            ESP_LOGE(TAG, "task stack allocation failed (feed=%p detect=%p)",
+                     static_cast<void *>(feed_stack_), static_cast<void *>(detect_stack_));
+            heap_caps_free(feed_stack_);
+            heap_caps_free(detect_stack_);
+            feed_stack_ = nullptr;
+            detect_stack_ = nullptr;
+            return;
+        }
+        ESP_LOGI(TAG, "task stacks allocated: 2 x %u bytes, internal, before the AFE",
+                 static_cast<unsigned>(TASK_STACK_UNITS * sizeof(StackType_t)));
+    }
 
     /* ---- 1. Open the microphone through the devkit ------------------- */
     if (audio_ == nullptr || !audio_->is_ok()) {
@@ -208,8 +247,13 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     /* ---- 5. Start feed + detect tasks --------------------------------- */
     task_flag_ = 1;
 
-    if (xTaskCreatePinnedToCore(feed_task_fn, "feed", 8 * 1024,
-                                this, 5, &feed_task_, 0) != pdPASS) {
+    /* Static creation over the PSRAM stacks taken in step 0 (issue #63): the
+     * internal heap is asked for nothing here, so "feed task creation failed"
+     * cannot happen. */
+    feed_task_ = xTaskCreateStaticPinnedToCore(feed_task_fn, "feed",
+                                               TASK_STACK_UNITS,
+                                               this, 5, feed_stack_, &feed_tcb_, 0);
+    if (feed_task_ == nullptr) {
         ESP_LOGE(TAG, "feed task creation failed");
         task_flag_ = 0;
         xTimerDelete(timeout_timer_, 0);
@@ -218,11 +262,14 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
         return;
     }
 
-    if (xTaskCreatePinnedToCore(detect_task_fn, "detect", 8 * 1024,
-                                this, 5, &detect_task_, 1) != pdPASS) {
+    detect_task_ = xTaskCreateStaticPinnedToCore(detect_task_fn, "detect",
+                                                 TASK_STACK_UNITS,
+                                                 this, 5, detect_stack_, &detect_tcb_, 1);
+    if (detect_task_ == nullptr) {
         ESP_LOGE(TAG, "detect task creation failed");
         task_flag_ = 0;
         vTaskDelete(feed_task_);
+        feed_task_ = nullptr;
         xTimerDelete(timeout_timer_, 0);
         afe_handle_->destroy(afe_data_);
         audio_->close_mic();
@@ -250,6 +297,13 @@ VoicePipeline::~VoicePipeline()
         vTaskDelete(detect_task_);
         detect_task_ = nullptr;
     }
+
+    /* The tasks are gone, so their stacks can go (issue #63: they are PSRAM
+     * blocks owned here, not .bss, and not freed by vTaskDelete). */
+    heap_caps_free(feed_stack_);
+    heap_caps_free(detect_stack_);
+    feed_stack_ = nullptr;
+    detect_stack_ = nullptr;
 
     if (timeout_timer_ != nullptr) {
         xTimerDelete(timeout_timer_, 0);
