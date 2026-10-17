@@ -1,0 +1,131 @@
+name: diagrams
+
+# The architecture diagrams cite `path:line` ranges pinned to a commit, so they
+# go stale the moment the code moves. This re-pins them to the commit being
+# released, re-resolves every citation with archify, re-renders the PNGs, and
+# fails the release if any cited range no longer exists.
+#
+# workflow_dispatch runs the same gate without touching a release — that is the
+# manual test path.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # archify is MIT but not published to npm (`"private": true`), so CI checks out
+  # the upstream tag directly and pins the exact commit.
+  ARCHIFY_REPO: https://github.com/tt-a1i/archify.git
+  ARCHIFY_COMMIT: 1c2b42d660e4a7571813fb43839c79e3e9ca7720
+
+jobs:
+  gate:
+    name: diagram gate
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history: archify resolves each cited `path:line` against the pinned
+      # revision, which on a tag is this commit but on a branch run may be older.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch archify at the pinned commit
+        run: |
+          set -euo pipefail
+          git clone --quiet "$ARCHIFY_REPO" "$RUNNER_TEMP/archify"
+          git -C "$RUNNER_TEMP/archify" checkout --quiet "$ARCHIFY_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/archify" rev-parse HEAD)" = "$ARCHIFY_COMMIT" \
+            || { echo "::error::archify is not at $ARCHIFY_COMMIT"; exit 1; }
+          # The skill lives at archify/ inside its own repository.
+          test -f "$RUNNER_TEMP/archify/archify/bin/archify.mjs" \
+            || { echo "::error::archify CLI not found at the expected path"; exit 1; }
+          node "$RUNNER_TEMP/archify/archify/bin/archify.mjs" doctor
+
+      - name: Install a headless browser
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user playwright
+          python3 -m playwright install --with-deps chromium
+          chrome="$(python3 -c 'from playwright.sync_api import sync_playwright as s; print(s().start().chromium.executable_path)')"
+          test -x "$chrome" || { echo "::error::playwright produced no chromium"; exit 1; }
+          # Both tools are told about the browser explicitly:
+          #   ARCHIFY_CHROME - archify's browser-check gate (it does NOT read PATH
+          #                    or CHROME_PATH; without it the gate silently skips)
+          #   CHROME_PATH    - tools/render_architecture_png.py
+          # --no-sandbox keeps it working where unprivileged user namespaces are
+          # blocked, which is the case on the dev host.
+          printf '#!/bin/sh\nexec "%s" --no-sandbox "$@"\n' "$chrome" \
+            | sudo tee /usr/local/bin/archify-chrome >/dev/null
+          sudo chmod +x /usr/local/bin/archify-chrome
+          /usr/local/bin/archify-chrome --version
+          echo "ARCHIFY_CHROME=/usr/local/bin/archify-chrome" >> "$GITHUB_ENV"
+          echo "CHROME_PATH=/usr/local/bin/archify-chrome" >> "$GITHUB_ENV"
+
+      - name: Pin the diagrams to this commit
+        run: |
+          set -euo pipefail
+          python3 tools/set_diagram_revision.py \
+            --revision "$GITHUB_SHA" \
+            docs/architecture/architecture.json docs/architecture/runtime.json
+          python3 tools/set_diagram_revision.py \
+            --revision "$GITHUB_SHA" --check \
+            docs/architecture/architecture.json docs/architecture/runtime.json
+          git --no-pager diff --stat
+
+      - name: Re-resolve and validate both diagrams
+        run: |
+          set -euo pipefail
+          a="$RUNNER_TEMP/archify/archify/bin/archify.mjs"
+          node "$a" finalize architecture \
+            docs/architecture/architecture.json docs/architecture/architecture.html \
+            --repo-root . --quality showcase
+          node "$a" finalize sequence \
+            docs/architecture/runtime.json docs/architecture/runtime.html \
+            --repo-root . --quality showcase
+
+      - name: Re-render the static PNGs
+        run: |
+          set -euo pipefail
+          python3 tools/render_architecture_png.py \
+            docs/architecture/architecture.html docs/architecture/architecture.png
+          python3 tools/render_architecture_png.py \
+            docs/architecture/runtime.html docs/architecture/runtime.png
+          ls -l docs/architecture/*.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diagrams
+          path: |
+            docs/architecture/architecture.json
+            docs/architecture/architecture.html
+            docs/architecture/architecture.png
+            docs/architecture/runtime.json
+            docs/architecture/runtime.html
+            docs/architecture/runtime.png
+          if-no-files-found: error
+
+      - name: Attach the diagrams to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          stage="diagrams-$tag"; mkdir -p "$stage"
+          for f in architecture.json architecture.html architecture.png \
+                   runtime.json runtime.html runtime.png; do
+            cp "docs/architecture/$f" "$stage/${f%.*}-$tag.${f##*.}"
+          done
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes
+          gh release upload "$tag" "$stage"/* --clobber
+          gh release view "$tag" --json assets --jq '.assets[].name'

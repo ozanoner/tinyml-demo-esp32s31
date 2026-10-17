@@ -252,3 +252,23 @@ the same job and additionally hands the ELF to the panic decoder. The applicatio
 
 The ESP-Mosaico's camera module claims the USB Serial/JTAG pads, so its console is UART-only and
 has to be read through a UART bridge rather than a USB port.
+
+## Releases
+
+A tag is the release. `v*` starts two workflows, and both can also be started by hand from the
+Actions tab to test them without publishing anything:
+
+| Workflow | What it does | On a tag |
+|---|---|---|
+| `build` | builds both presets inside the digest-pinned ESP-IDF image, checks the flash layout the docs promise (`coco_det` must be its own partition, `app-flash` must not write either model), then packages each devkit's images, a merged single image and its `SHA256SUMS` | attaches all of it to the release |
+| `diagrams` | re-pins the architecture diagrams to the commit being released, re-resolves every cited `path:line` against it and re-renders the PNGs | attaches the JSON/HTML/PNG to the release, and fails the tag if a citation no longer resolves |
+
+A manual run is identical up to the attach step; its artefacts download from the run summary.
+
+Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
+(`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the component graph through the
+committed `dependencies.lock`.
+
+`merged-<devkit>.bin` is the whole flash set in one image — write it at `0x0` and the board is
+complete, partitions and both models included (`esptool write-flash 0x0 merged-<devkit>.bin` with the
+same `--flash-mode dio --flash-size 16MB --flash-freq 80m` flags).

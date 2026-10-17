@@ -1,0 +1,119 @@
+name: build
+
+# Builds both devkits and, on a tag, ships the images with the release.
+# workflow_dispatch runs the same build without touching a release — that is the
+# manual test path.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Pinned by digest, not tag: `espressif/idf:latest` is a moving v6.1-dev build,
+  # so a release built tomorrow would not be the compiler that built the tested
+  # image. Version string behind this digest: ESP-IDF v6.1-dev-8440-gab95e70748f.
+  IDF_IMAGE: espressif/idf@sha256:6ad927cfb85a5fea82da64b00960b01adff4fc6019ffcdb18caa3da642d55343
+
+jobs:
+  build:
+    name: build (${{ matrix.devkit }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        devkit: [korvo1, mosaico]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The component graph is pinned by the committed dependencies.lock, so the
+      # cache key changes only when that graph changes.
+      - name: Restore the component cache
+        uses: actions/cache@v4
+        with:
+          path: managed_components
+          key: components-${{ runner.os }}-${{ hashFiles('dependencies.lock') }}
+          restore-keys: components-${{ runner.os }}-
+
+      - name: Pull the pinned toolchain
+        run: docker pull "$IDF_IMAGE"
+
+      - name: Build
+        run: |
+          docker run --rm -v "$PWD":/project -w /project "$IDF_IMAGE" bash -lc '
+            set -e
+            . /opt/esp/idf/export.sh >/dev/null
+            idf.py --preset ${{ matrix.devkit }} build
+            idf.py --preset ${{ matrix.devkit }} size
+            idf.py --preset ${{ matrix.devkit }} merge-bin -o merged-${{ matrix.devkit }}.bin
+          '
+
+      # Guards the layout the docs promise: the detection model must be its own
+      # partition and must not be back inside the app image (issue #69).
+      - name: Check the flash layout
+        run: |
+          set -euo pipefail
+          b="build/${{ matrix.devkit }}"
+          echo "--- flash_args"; cat "$b/flash_args"
+          grep -q '0xc10000 espdl_models/coco_detect.espdl' "$b/flash_args" \
+            || { echo "::error::coco_det is not flashed from its own partition"; exit 1; }
+          grep -q 'tinyml-demo-esp32s31.bin' "$b/flash_args" \
+            || { echo "::error::app image missing from flash_args"; exit 1; }
+          grep -qx '0x10000 tinyml-demo-esp32s31.bin' "$b/flash_app_args" \
+            || { echo "::error::app-flash must write the app partition only"; exit 1; }
+          if test -n "$(grep -E 'coco_detect|srmodels' "$b/flash_app_args")"; then
+            echo "::error::app-flash must not write the model partitions"; exit 1
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          devkit='${{ matrix.devkit }}'
+          b="build/$devkit"
+          d="dist"; mkdir -p "$d"
+          cp "$b/bootloader/bootloader.bin"           "$d/bootloader-$devkit.bin"
+          cp "$b/partition_table/partition-table.bin" "$d/partition-table-$devkit.bin"
+          cp "$b/ota_data_initial.bin"                "$d/ota_data_initial-$devkit.bin"
+          cp "$b/srmodels/srmodels.bin"               "$d/srmodels-$devkit.bin"
+          cp "$b/espdl_models/coco_detect.espdl"      "$d/coco_detect-$devkit.espdl"
+          cp "$b/tinyml-demo-esp32s31.bin"            "$d/app-$devkit.bin"
+          cp "$b/merged-$devkit.bin"                  "$d/merged-$devkit.bin"
+          cp "$b/flash_args"                          "$d/flash_args-$devkit.txt"
+          ( cd "$d" && sha256sum bootloader-$devkit.bin partition-table-$devkit.bin \
+              ota_data_initial-$devkit.bin srmodels-$devkit.bin coco_detect-$devkit.espdl \
+              app-$devkit.bin merged-$devkit.bin > "SHA256SUMS-$devkit.txt" )
+          echo "--- $devkit"; ls -l "$d"/*"$devkit"*; cat "$d/SHA256SUMS-$devkit.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tinyml-demo-${{ matrix.devkit }}
+          path: dist
+          if-no-files-found: error
+
+  release:
+    name: attach to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: tinyml-demo-*
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes
+          gh release upload "$tag" dist/* --clobber
+          echo "--- assets on $tag"
+          gh release view "$tag" --json assets --jq '.assets[].name'
