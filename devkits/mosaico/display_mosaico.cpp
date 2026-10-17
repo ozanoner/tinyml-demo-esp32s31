@@ -2,7 +2,7 @@
  * @file display_mosaico.cpp
  * @brief ESP-Mosaico implementation of devkit::Display.
  *
- * 480x480 CO5300 QSPI panel with a CST9217 touch controller. The BSP owns the
+ * 480x480 CO5300 QSPI panel with a CST9220 touch controller. The BSP owns the
  * panel bring-up (bsp_display_new: SPI bus, QSPI panel IO, CO5300 init, MADCTL
  * rotation) and the touch controller (bsp_touch_new), while *this* file owns the
  * LVGL adapter configuration.

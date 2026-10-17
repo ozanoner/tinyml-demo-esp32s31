@@ -85,7 +85,7 @@ The BSP handles all underlying hardware init (audio codec, LCD, touch, camera, S
 - [x] Individual BSP init functions called per peripheral (`bsp_i2c_init()`, `bsp_audio_init()`, `bsp_display_start()`, camera via the BSP's `esp_video`, etc.) — each returns `esp_err_t`, serving as a hardware self-test
 - [ ] Any init failure is logged with `ESP_LOGE` **and `app_main` returns** — the shipped path uses `ESP_ERROR_CHECK()` (`main/app.cpp`), so a fatal peripheral init logs and then aborts rather than returning
 - [x] All peripherals initialised at startup — including the camera (Korvo-1: OV3660 over DVP via `esp_video`; ESP-Mosaico: the left-slot camera module), audio, display, touch
-- [x] LVGL and touch initialised via the BSP — GT1151 on the Korvo-1, CST9217 on the ESP-Mosaico
+- [x] LVGL and touch initialised via the BSP — GT1151 on the Korvo-1, CST9220 on the ESP-Mosaico
 - [x] Splash screen displayed for 5 s (or until tap) showing "TinyML Demo / Voice Triggered / Object Detection" (`ui::text::kSplashTitle`), using the full panel
 - [x] Tap anywhere on screen skips the splash immediately and WakeNet listening begins
 
@@ -115,7 +115,7 @@ After the BSP initialisation (REQ-002), integrate **ESP-SR** for always-on wake-
 
 **Acceptance Criteria:**
 - [x] ESP-SR component (`espressif/esp-sr`) added, supporting ESP32-S31 target — pinned 2.4.7 in `main/idf_component.yml`
-- [x] ESP-SR AFE initialised at 16 kHz — **mono**, not dual-microphone: both devkits have two microphones, but the pipeline runs one channel (`devkits/*/audio_*.cpp` report `afe_mic_format()` = `"M"`)
+- [x] ESP-SR AFE initialised at 16 kHz — **mono**, not dual-microphone: the Korvo-1 has a dual-microphone array and the ESP-Mosaico one onboard microphone, but the pipeline runs one channel (`devkits/*/audio_*.cpp` report `afe_mic_format()` = `"M"`)
 - [x] WakeNet model loaded and initialised — wake word **"Hi,ESP"** (`CONFIG_SR_WN_WN9_HIESP=y` in `sdkconfig.defaults`), selectable via `menuconfig`
 - [x] Continuous audio capture from the onboard microphone via the devkit's audio pipeline — a dedicated feed task on core 0
 - [x] On wake word match → callback triggers MultiNet listening phase

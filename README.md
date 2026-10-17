@@ -8,6 +8,21 @@ One application, two devkits: the **ESP32-S31-Korvo-1** (800×480) and the **ESP
 
 ![Architecture: one app, two devkits](docs/architecture/architecture.png)
 
+## Supported devkits
+
+| | ESP32-S31-Korvo-1 | ESP-Mosaico |
+|---|---|---|
+| Preset | `korvo1` | `mosaico` |
+| Panel | 800×480 RGB LCD, GT1151 touch | 480×480 CO5300 QSPI panel, CST9220 touch |
+| Camera | OV3660 over DVP, 240×240 RGB565_BE | left-slot camera module (H2, OV3640 / SC101IOT), 320×180 |
+| Audio codec | ES8389 | ES8311 |
+| BSP | `espressif/esp32_s31_korvo_1` 1.0.1 | `esp-mosaico-bsp` @ `c32332e` |
+
+Both: ESP32-S31, 16 MB flash, 16 MB octal PSRAM, target `esp32s31`. Audio input differs: the
+Korvo-1 has a dual-microphone array, the ESP-Mosaico one onboard microphone
+(LMA2718B331-OE1) into its ES8311. Either way the pipeline runs a single channel.
+
+
 ## What it does
 
 - **Wake word** — WakeNet9 ("Hi, ESP") arms command mode
@@ -82,25 +97,10 @@ be common. If a capture returns nothing and the wiring looks right, swap RX and 
 - **Any 3.3 V USB-TTL adapter** — CP2102, FT232, CH340: the same three wires, no firmware needed,
   and the adapter's own `/dev/ttyUSB*` is the console port.
 
-```bash
-idf.py --preset mosaico -p /dev/ttyACM0 monitor   # the bridge's port, not the board's
-```
-
+Having the firmware flashed, you can test it:  
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the
 detections appear beside it.
 
-## Supported devkits
-
-| | ESP32-S31-Korvo-1 | ESP-Mosaico |
-|---|---|---|
-| Preset | `korvo1` | `mosaico` |
-| Panel | 800×480 RGB LCD, GT1151 touch | 480×480 CO5300 QSPI panel, CST9217 touch |
-| Camera | OV3660 over DVP, 240×240 RGB565_BE | left-slot camera module (OV3640 / SC101IOT), 320×180 |
-| Audio codec | ES8389 | ES8311 |
-| BSP | `espressif/esp32_s31_korvo_1` 1.0.1 | `esp-mosaico-bsp` @ `c32332e` |
-
-Both: ESP32-S31, 16 MB flash, 16 MB octal PSRAM, target `esp32s31`. Both have two microphones;
-the pipeline runs one channel.
 
 ## How it is built
 
@@ -143,6 +143,7 @@ The runtime path, task by task:
 - [Korvo-1 user guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-korvo-1/user_guide.html)
 - [Korvo-1 BSP — `espressif/esp32_s31_korvo_1`](https://components.espressif.com/components/espressif/esp32_s31_korvo_1)
 - [Korvo-1 BSP source and examples (`esp-bsp`)](https://github.com/espressif/esp-bsp/tree/master/bsp/esp32_s31_korvo_1)
+- [LCD subboard — ESP32-S3-LCD-EV-Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-lcd-ev-board/user_guide.html) — the 4.3″ panel and touch the Korvo-1 is used with
 - [OV3660 sensor](https://www.ovt.com/products/ov3660) — DVP, RGB565_BE 240×240
 
 **ESP-Mosaico**
@@ -151,7 +152,7 @@ The runtime path, task by task:
 - [Firmware update — download mode and the browser flasher](https://mosaico.espressif.com/firmware-update/)
 - [mosaico.espressif.com](https://mosaico.espressif.com/)
 - [ESP-Mosaico BSP source](https://github.com/esp-mosaico/esp-mosaico-bsp) — `components/esp-mosaico-bsp` and `components/mosaico_module_camera`, both at the pinned commit
-- Camera module: the left slot's module carries an OV3640 or SC101IOT sensor — see the user guide's camera section
+- Camera module: the left slot (H2) takes the camera module, carrying an OV3640 or SC101IOT sensor — see the [camera module guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp-mosaico/user_guide_camera.html)
 
 ## Licence
 
