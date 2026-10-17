@@ -66,7 +66,7 @@ tasks, `Detector` owns the inference task, `MainScreen` and `Splash` are the LVG
 `components/devkit_api` is the board seam — `Board` / `Audio` / `Display` / `Camera` — and
 `devkits/korvo1` and `devkits/mosaico` implement it.
 
-Both diagrams below are generated from this repository and source-backed: every component carries
+Both diagrams are generated from this repository and source-backed: every component carries
 the file and line range that proves it. They are **generated files** — edit the JSON, never the HTML.
 
 | Diagram | Static render | Interactive | What it answers |
