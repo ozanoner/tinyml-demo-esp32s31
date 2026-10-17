@@ -98,12 +98,17 @@ void App::print_memory_summary(const char *label) const
     size_t free_sram  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t largest    = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    /* Internal-only largest block: what a task stack or any single allocation can
+     * actually get, and the number issue #63 turns on. `largest` above is
+     * MALLOC_CAP_DEFAULT, i.e. PSRAM-inclusive, so it says nothing about it. */
+    size_t largest_sram = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
-    ESP_LOGI(TAG, "[MEM %s] SRAM:%lu  PSRAM:%lu  largest:%lu",
+    ESP_LOGI(TAG, "[MEM %s] SRAM:%lu  PSRAM:%lu  largest:%lu  largestSRAM:%lu",
              label,
              (unsigned long)free_sram,
              (unsigned long)free_psram,
-             (unsigned long)largest);
+             (unsigned long)largest,
+             (unsigned long)largest_sram);
 
     constexpr size_t total_sram  = 512 * 1024;
     constexpr size_t total_psram = 16 * 1024 * 1024;
