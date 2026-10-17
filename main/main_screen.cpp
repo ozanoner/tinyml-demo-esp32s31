@@ -47,6 +47,10 @@ size_t       MainScreen::s_img_bytes_  = 0;
 
 namespace {
 
+/* Advances every time a frame is staged. 0 means "nothing staged", so the counter
+ * skips it. Written under the LVGL lock, read by the LVGL task. */
+uint32_t s_stage_seq = 0;
+
 /* Strip the theme's decoration: this screen draws flat, sized, positioned objects
  * only — no borders, no radius, no padding, no scrolling. */
 void style_plain(lv_obj_t *obj)
@@ -55,14 +59,11 @@ void style_plain(lv_obj_t *obj)
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/* Hand-off to the LVGL task: the frame geometry and the detections. The image
- * itself is already in the static buffer by the time this is queued. */
+/* Hand-off to the LVGL task: the detections. The frame itself, with its geometry,
+ * is already in the static buffer by the time this is queued (issue #57). */
 struct ResultCtx {
     MainScreen                     *self;
-    uint32_t                        w;
-    uint32_t                        h;
-    uint32_t                        stride;
-    uint32_t                        bytes;
+    uint32_t                        generation;
     std::list<dl::detect::result_t> results;
 };
 
@@ -99,6 +100,11 @@ MainScreen::MainScreen(devkit::Display *display,
     , message_{}
     , saved_message_{}
     , cb_busy_(false)
+    , staged_w_(0)
+    , staged_h_(0)
+    , staged_stride_(0)
+    , staged_bytes_(0)
+    , stage_token_(0)
 {
     lv_obj_t *scr = lv_disp_get_scr_act(nullptr);
     if (scr == nullptr) {
@@ -410,17 +416,13 @@ void MainScreen::on_countdown_done(countdown_cb_t cb)
 //  Public — the result
 // ---------------------------------------------------------------------------
 
-void MainScreen::show_result(const uint8_t *image,
-                             uint32_t w, uint32_t h, uint32_t stride, uint32_t bytes,
-                             const std::list<dl::detect::result_t> &results)
+uint32_t MainScreen::stage_frame(const uint8_t *image,
+                                 uint32_t w, uint32_t h, uint32_t stride, uint32_t bytes)
 {
-    if (display_ == nullptr) {
-        ESP_LOGE(TAG, "No display handle — no result");
-        return;
-    }
-    if (image == nullptr || bytes == 0) {
-        ESP_LOGE(TAG, "No image to show");
-        return;
+    if (image == nullptr || bytes == 0 || w == 0 || h == 0 || stride == 0) {
+        ESP_LOGE(TAG, "Nothing to stage");
+        staged_bytes_ = 0;
+        return 0;
     }
 
     /* Static buffer, grown on demand. Allocated once in practice: the geometry is
@@ -435,15 +437,48 @@ void MainScreen::show_result(const uint8_t *image,
         s_img_buf_ = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
         if (s_img_buf_ == nullptr) {
             ESP_LOGE(TAG, "OOM for the frame copy (%lu bytes)", (unsigned long)bytes);
-            return;
+            staged_bytes_ = 0;
+            return 0;
         }
         s_img_bytes_ = bytes;
     }
 
-    /* Synchronous copy, while the camera's buffer is still valid. */
+    /* Synchronous copy, while the frame's buffer is still valid — and under the
+     * LVGL lock, because the frame already on screen is rendered out of this same
+     * static buffer (issue #57). Held for one memcpy; no widget is touched, and
+     * nothing is made visible, so this cannot put a frame on screen. The geometry
+     * is published inside the same lock, before the hand-off that displays it. */
+    if (!lock_lvgl()) {
+        staged_bytes_ = 0;
+        return 0;
+    }
     memcpy(s_img_buf_, image, bytes);
+    staged_w_      = w;
+    staged_h_      = h;
+    staged_stride_ = stride;
+    staged_bytes_  = bytes;
+    stage_token_   = ++s_stage_seq;
+    if (stage_token_ == 0) {
+        stage_token_ = ++s_stage_seq;   /* 0 is reserved for "nothing staged" */
+    }
+    unlock_lvgl();
 
-    auto *ctx = new (std::nothrow) ResultCtx{this, w, h, stride, bytes, results};
+    return stage_token_;
+}
+
+void MainScreen::show_result(uint32_t generation,
+                             const std::list<dl::detect::result_t> &results)
+{
+    if (display_ == nullptr) {
+        ESP_LOGE(TAG, "No display handle — no result");
+        return;
+    }
+    if (generation == 0) {
+        ESP_LOGE(TAG, "no frame staged for this result — not shown");
+        return;
+    }
+
+    auto *ctx = new (std::nothrow) ResultCtx{this, generation, results};
     if (ctx == nullptr) {
         ESP_LOGE(TAG, "OOM for the result hand-off");
         return;
@@ -471,10 +506,26 @@ void MainScreen::on_result_dismissed(dismiss_cb_t cb)
 //  Private — result view (LVGL task)
 // ---------------------------------------------------------------------------
 
-void MainScreen::show_result_now(uint32_t w, uint32_t h, uint32_t stride, uint32_t bytes,
+void MainScreen::show_result_now(uint32_t generation,
                                  const std::list<dl::detect::result_t> &results)
 {
     if (img_ == nullptr || placeholder_ == nullptr || list_ == nullptr) return;
+    if (staged_bytes_ == 0 || s_img_buf_ == nullptr) {
+        ESP_LOGE(TAG, "No frame staged — the result cannot be shown");
+        return;
+    }
+    if (generation != stage_token_) {
+        /* Another cycle staged a newer frame while this one was being inferred:
+         * what is in the buffer is not the frame these results describe. */
+        ESP_LOGE(TAG, "staged frame replaced (token %lu, staged %lu) — result not shown",
+                 (unsigned long)generation, (unsigned long)stage_token_);
+        return;
+    }
+
+    const uint32_t w      = staged_w_;
+    const uint32_t h      = staged_h_;
+    const uint32_t stride = staged_stride_;
+    const uint32_t bytes  = staged_bytes_;
 
     /* Placement follows the geometry actually produced, not the one requested:
      * the boxes are drawn over this image 1:1. */
@@ -981,5 +1032,5 @@ void MainScreen::apply_result(void *arg)
 {
     std::unique_ptr<ResultCtx> ctx(static_cast<ResultCtx *>(arg));
     if (ctx == nullptr || ctx->self == nullptr) return;
-    ctx->self->show_result_now(ctx->w, ctx->h, ctx->stride, ctx->bytes, ctx->results);
+    ctx->self->show_result_now(ctx->generation, ctx->results);
 }

@@ -22,6 +22,11 @@
  *    and links a node into LVGL's timer list, so calling it unguarded while the
  *    LVGL task walks that list corrupts it — and the write itself runs in the
  *    LVGL task;
+ *  - stage_frame() copies a produced frame into this class's static buffer, under
+ *    the same lock, and touches no widget. It runs in the cycle that captured the
+ *    frame, because the buffer it reads is only valid until the next capture
+ *    (issue #57) — so unlike the writes above it cannot be deferred to the LVGL
+ *    task;
  *  - the countdown, the auto-revert and the result auto-dismiss are LVGL timers,
  *    so their ticks already run in the LVGL task and touch widgets directly;
  *  - the capture the countdown ends with runs in this class's own worker task:
@@ -119,25 +124,48 @@ public:
     void on_countdown_done(countdown_cb_t cb);
 
     /**
-     * @brief Show a produced frame with its detection list.
+     * @brief Copy a produced frame into the screen's own buffer, ready to show.
      *
-     * The image must already be in display form (devkit::Camera::to_display());
-     * it is copied synchronously into a static PSRAM buffer, because the screen is
-     * built later, in the LVGL task, and the camera reuses its own buffer. The
-     * boxes are not drawn here: they belong to the frame the detector saw, and
-     * the frame is placed 1:1 so they line up where the detector put them.
+     * The image must already be in display form (devkit::Camera::to_display()) and
+     * its buffer must still be valid: this copies it synchronously, so it is called
+     * from the cycle that captured the frame, before anything can capture again
+     * (issue #57). The copy takes the display's LVGL lock, because the LVGL task
+     * renders the frame already on screen out of the same static buffer. No widget
+     * is touched and nothing becomes visible, so this cannot put a frame on screen
+     * by itself.
      *
-     * The placeholder is hidden until the result is dismissed.
-     * Callable from any task.
+     * Repeated calls are the normal case: the frame staged last is the one the next
+     * show_result() displays. Callable from any task except the LVGL task.
      *
      * @param image  display-form pixels (LV_COLOR_FORMAT_NATIVE)
      * @param w,h    geometry the image was produced at
      * @param stride bytes per row
      * @param bytes  total bytes
+     * @return token identifying this staged frame, or 0 if nothing was staged.
+     *         Pass it to show_result() so the result shows the frame from its own
+     *         cycle rather than whatever is in the buffer by then.
+     */
+    uint32_t stage_frame(const uint8_t *image,
+                         uint32_t       w, uint32_t h, uint32_t stride, uint32_t bytes);
+
+    /**
+     * @brief Show the frame staged as @p generation, with its detection list.
+     *
+     * The image is whatever stage_frame() copied and the geometry came with it, so
+     * the caller passes the results and the token it staged. If the buffer has been
+     * restaged since — another cycle got a newer frame in first — nothing is shown
+     * and it is logged: showing the newer frame under this cycle's boxes would be
+     * wrong, and the pair cannot be re-made. The boxes are not drawn here: they
+     * belong to the frame the detector saw, and the frame is placed 1:1 so they line
+     * up where the detector put them.
+     *
+     * The placeholder is hidden until the result is dismissed.
+     * Callable from any task.
+     *
+     * @param generation token from stage_frame() for this result's frame
      * @param results detections, in detector coordinates
      */
-    void show_result(const uint8_t *image,
-                     uint32_t       w, uint32_t h, uint32_t stride, uint32_t bytes,
+    void show_result(uint32_t generation,
                      const std::list<dl::detect::result_t> &results);
 
     /** Install the callback fired when a shown result is dismissed.
@@ -200,6 +228,16 @@ private:
     static uint8_t *s_img_buf_;
     static size_t   s_img_bytes_;
 
+    /** Geometry of the frame staged in s_img_buf_ (staged_bytes_ == 0 = none). */
+    uint32_t staged_w_;
+    uint32_t staged_h_;
+    uint32_t staged_stride_;
+    uint32_t staged_bytes_;
+
+    /** Token of the frame currently staged (0 = none). stage_frame() advances it;
+     *  show_result() displays only the token its own cycle staged. */
+    uint32_t stage_token_;
+
     /* ---- helpers ------------------------------------------------------ */
     /** Recompute the layout for this frame geometry and reposition the widgets. */
     void apply_layout(int32_t frame_w, int32_t frame_h);
@@ -216,8 +254,8 @@ private:
     /** Delete every bounding box. LVGL task. */
     void clear_boxes();
 
-    /** Build the result on screen. LVGL task. */
-    void show_result_now(uint32_t w, uint32_t h, uint32_t stride, uint32_t bytes,
+    /** Build the result on screen from the frame staged as @p generation. LVGL task. */
+    void show_result_now(uint32_t generation,
                          const std::list<dl::detect::result_t> &results);
 
     /** Take the result off screen and put the white placeholder back: rows, boxes,

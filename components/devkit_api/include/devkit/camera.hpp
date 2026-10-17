@@ -52,7 +52,13 @@ enum class PixelOrder {
     BGR,  /**< B, G, R from the lowest address (PPA 24-bit output) */
 };
 
-/** One captured frame. The pixel data stays owned by the devkit. */
+/**
+ * One captured frame. The pixel data stays owned by the devkit and is valid until
+ * the next capture(). The interface is not re-entrant: a devkit holds one capture
+ * state, so capture() must not be called again while a Frame is still in use. The
+ * application enforces this by doing every conversion it needs, and copying the
+ * result out, inside the cycle that captured the frame.
+ */
 struct Frame {
     const uint8_t *data;  /**< pixel data; valid until the next capture() */
     uint32_t width;       /**< pixels */
@@ -117,6 +123,9 @@ public:
     /**
      * @brief Capture one still frame.
      *
+     * Not re-entrant, and the returned Frame's pixels live only until the next
+     * call. Callers do every conversion the frame needs before capturing again.
+     *
      * @param[out] out  filled on success; the pixel data is owned by this object
      *                  and stays valid until the next capture().
      */
@@ -135,6 +144,8 @@ public:
      *
      * The buffer is owned by this object and stays valid until the next call to
      * to_model_input() (or to_display()); copy it if it must outlive that.
+     * Consume one result before asking for the next conversion rather than relying
+     * on the two having separate buffers.
      *
      * @param[in]  src      frame to convert
      * @param[in]  want_w   requested width  (the result-screen image width)
@@ -154,6 +165,8 @@ public:
      *
      * The buffer is owned by this object and stays valid until the next call to
      * to_display() (or to_model_input()); copy it if it must outlive that.
+     * Consume one result before asking for the next conversion rather than relying
+     * on the two having separate buffers.
      *
      * @param[in]  src      frame to convert
      * @param[in]  want_w   requested width
