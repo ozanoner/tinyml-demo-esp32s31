@@ -18,7 +18,8 @@ One application, two devkits: the **ESP32-S31-Korvo-1** (800×480) and the **ESP
 | Audio codec | ES8389 | ES8311 |
 | BSP | `espressif/esp32_s31_korvo_1` 1.0.1 | `esp-mosaico-bsp` @ `c32332e` |
 
-Both: ESP32-S31, 16 MB flash, 16 MB octal PSRAM, target `esp32s31`. Audio input differs: the
+Both: ESP32-S31, 16 MB flash, 16 MB octal PSRAM, target `esp32s31`. The ESP-Mosaico also carries a
+1 Gbit SPI NAND for graphics and asset caching, which this app does not use. Audio input differs: the
 Korvo-1 has a dual-microphone array, the ESP-Mosaico one onboard microphone
 (LMA2718B331-OE1) into its ES8311. Either way the pipeline runs a single channel.
 
@@ -94,6 +95,9 @@ be common. If a capture returns nothing and the wiring looks right, swap RX and 
 - **Raspberry Pi Pico 2** — what this project uses: GP1 to the Mosaico's `TX0`, GP0 to its `RX0`,
   GND to GND, with a small MicroPython UART-to-USB passthrough running on it. Plug the Pico into the
   host and treat it as the console port.
+  If a capture returns 0 bytes while the port still enumerates, the Pico is wedged — power-cycle it.
+  Its passthrough blocks mid-write when a burst arrives with nobody reading, and no amount of
+  soft-resetting the bridge clears it.
 - **Any 3.3 V USB-TTL adapter** — CP2102, FT232, CH340: the same three wires, no firmware needed,
   and the adapter's own `/dev/ttyUSB*` is the console port.
 
