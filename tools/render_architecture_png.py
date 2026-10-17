@@ -13,13 +13,33 @@ Usage:
 """
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-CHROME = (Path.home() / ".cache/ms-playwright/chromium-1228/chrome-linux64/chrome")
+
+def _chrome() -> Path:
+    """Resolve the browser: explicit override, then PATH, then the local Playwright install.
+
+    CI has no Playwright cache, so it sets CHROME_PATH (or links one of the
+    usual names onto PATH); a developer machine falls through to the pinned
+    Playwright download the local runs use.
+    """
+    for var in ("CHROME_PATH", "CHROME_BIN"):
+        if os.environ.get(var):
+            return Path(os.environ[var])
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    return Path.home() / ".cache/ms-playwright/chromium-1228/chrome-linux64/chrome"
+
+
+CHROME = _chrome()
 CHROME_FLAGS = ["--no-sandbox", "--disable-dev-shm-usage", "--headless=new",
                 "--hide-scrollbars", "--default-background-color=ffffffff"]
 
