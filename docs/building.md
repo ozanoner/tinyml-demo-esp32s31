@@ -140,9 +140,18 @@ coredump, data, coredump, 0xE10000, 64K,
 | `nvs` | `0x9000` | 16 KB | NVS key/value store — **unused by this app**: nothing calls `nvs_flash_init()` | — |
 | `otadata` | `0xd000` | 8 KB | which slot to boot — always `factory` here, there are no OTA slots | full `flash` |
 | `phy_init` | `0xf000` | 4 KB | RF calibration data | full `flash` / first boot |
-| **`factory`** | `0x10000` | **8 MB** | **the application image** — 7.1 MB on the Korvo-1, 7.3 MB on the ESP-Mosaico, because the YOLO11n model is linked into it, not stored separately | `app-flash` |
+| **`factory`** | `0x10000` | **8 MB** | **the application image** — 7.14 MB on the Korvo-1, 7.31 MB on the ESP-Mosaico (what fills it: below) | `app-flash` |
 | **`model`** | `0x810000` | **6 MB** | **`srmodels.bin`** — the ESP-SR WakeNet/MultiNet models, ~3.0 MB used, mounted as SPIFFS and read by `esp_srmodel_init("model")` | full `flash` |
 | `coredump` | `0xE10000` | 64 KB | panic dumps — ESP-Mosaico only | — |
+
+**What fills the 8 MB app partition.** The object-detection model has no partition of its own:
+`espressif/coco_detect` links the YOLO11n `.espdl` into the image as data, so
+`libespressif__coco_detect.a` is 2.99 MB — **42% of the image**, and all but 1.3 KB of that is
+`.rodata` — while the ESP-DL runtime that executes it is another 2.02 MB, **28%**. Model plus runtime
+are 70% of the app, which is why `app-flash` moves ~7 MB every iteration. The rest is the frame:
+esp-sr's MultiNet G2P (0.62 MB), LVGL (0.40 MB), and the IDF subset. Figures from
+`idf.py --preset korvo1 size-components`; the linked model's bounds are `_binary_coco_detect_espdl_start`
+to `_end` in `build/korvo1/tinyml-demo-esp32s31.map` (0x4032c550–0x406062b0).
 
 ### What to flash, and when
 
