@@ -75,11 +75,10 @@ flash this app from a browser — see [Flash in a browser](#flash-in-a-browser-w
 download mode; check the number before flashing, because it is not always `ttyACM0`:
 
 ```bash
-ls /dev/serial/by-id/     # usb-Espressif_ESP32-S31_… is the board; anything else is a bridge
 idf.py --preset mosaico -p /dev/ttyACM0 flash
 ```
 
-**3. Monitor — the console is UART0, so it needs a bridge.** This build's console is UART, not USB:
+**3. Monitor** This build's console is UART, not USB:
 the left-slot camera module drives D2 on GPIO33, the pad USB Serial/JTAG uses
 (`devkits/mosaico/sdkconfig.defaults`). The chip's own USB port serves download only, so watch the
 console on the right-hand header H1 through a 3.3 V USB-UART bridge:
@@ -90,8 +89,7 @@ console on the right-hand header H1 through a 3.3 V USB-UART bridge:
 | pin 13 | `RX0` (GPIO59) — console in | bridge **TX** |
 | pin 20 | GND | GND |
 
-Leave pins 17/18/19 (`5V_IN` / `5V_OUT` / `VCC_3V3`) alone — the Mosaico powers itself, and GND must
-be common. If a capture returns nothing and the wiring looks right, swap RX and TX.
+If a capture returns nothing and the wiring looks right, swap RX and TX.
 
 - **Raspberry Pi Pico 2** — what this project uses: GP1 to the Mosaico's `TX0`, GP0 to its `RX0`,
   GND to GND, with a small MicroPython UART-to-USB passthrough running on it. Plug the Pico into the
@@ -104,27 +102,17 @@ be common. If a capture returns nothing and the wiring looks right, swap RX and 
 
 #### Flash in a browser, without a toolchain
 
-The vendor's [firmware-update page](https://mosaico.espressif.com/firmware-update/) flashes the board
-from Chrome or Edge over Web Serial — no Docker, no `idf.py`, no `esptool`. It takes **this project's
-own build**, not just the stock firmware:
+The vendor's [firmware-update page](https://mosaico.espressif.com/firmware-update/) can flash the board
+from Chrome or Edge over Web Serial:
 
 1. Take `merged-mosaico.bin` from the [releases page](https://github.com/ozanoner/tinyml-demo-esp32s31/releases)
-   — the release workflow attaches it per devkit (~15 MB). That single image is the whole flash set,
-   which is what this page wants: it writes a full image at `0x0000`.
+   — the release workflow attaches it per devkit (~15 MB). That single image is the whole flash set.
 2. On the page choose **Local firmware**, then **Choose bin firmware** and pick that file.
-3. **Connect device**, then **Flash firmware**, and confirm the data-clearing warning.
-
-It verifies the chip (`ESP32-S31 verified`) and finishes in about two minutes; the flash log ends with
-`Writing full image at 0x0000…` and `Flash complete.`
+3. **Connect device**, then **Flash firmware**.
 
 ![The ESP-Mosaico web flasher, flashing merged-mosaico.bin](docs/mosaico-web-flasher.png)
-
-**It erases what is on the board** — the page says so before it starts, so back up anything you need
-first. **Default firmware** on that page is the *vendor* image (`ESP-Mosaico-Claw`), not this app:
-the way back to stock, not a way to run the demo. If **Connect device** does not find the board, put it
-in download mode first — step 1 above. And do not feed it `app-mosaico.bin`: that image belongs at
-`0x10000`, while the browser writes at `0x0000`.
-
+   
+### Testing
 Having the firmware flashed, you can test it:  
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the
 detections appear beside it.
