@@ -127,12 +127,13 @@ nvs,      data, nvs,     0x9000,  0x4000,
 otadata,  data, ota,     0xd000,  0x2000,
 phy_init, data, phy,     0xf000,  0x1000,
 factory,  app,  factory, 0x10000, 8M,
-model,    data, spiffs,  ,        6M,
+model,    data, spiffs,  ,        4M,
+coco_det, data, spiffs,  ,        3M,
 ```
 
 ```csv
-# devkits/mosaico/partitions.csv — the same five rows, plus:
-coredump, data, coredump, 0xE10000, 64K,
+# devkits/mosaico/partitions.csv — the same six rows, plus:
+coredump, data, coredump, 0xF10000, 64K,
 ```
 
 | Partition | Offset | Size | Holds | Which command writes it |
@@ -140,39 +141,60 @@ coredump, data, coredump, 0xE10000, 64K,
 | `nvs` | `0x9000` | 16 KB | NVS key/value store — **unused by this app**: nothing calls `nvs_flash_init()` | — |
 | `otadata` | `0xd000` | 8 KB | which slot to boot — always `factory` here, there are no OTA slots | full `flash` |
 | `phy_init` | `0xf000` | 4 KB | RF calibration data | full `flash` / first boot |
-| **`factory`** | `0x10000` | **8 MB** | **the application image** — 7.14 MB on the Korvo-1, 7.31 MB on the ESP-Mosaico (what fills it: below) | `app-flash` |
-| **`model`** | `0x810000` | **6 MB** | **`srmodels.bin`** — the ESP-SR WakeNet/MultiNet models, ~3.0 MB used, mounted as SPIFFS and read by `esp_srmodel_init("model")` | full `flash` |
-| `coredump` | `0xE10000` | 64 KB | panic dumps — ESP-Mosaico only | — |
+| **`factory`** | `0x10000` | **8 MB** | **the application image** — 4.14 MB on the Korvo-1, 4.32 MB on the ESP-Mosaico (what fills it: below) | `app-flash` |
+| **`model`** | `0x810000` | **4 MB** | **`srmodels.bin`** — the ESP-SR WakeNet/MultiNet models, 3.05 MB used, mounted as SPIFFS and read by `esp_srmodel_init("model")` | full `flash` |
+| **`coco_det`** | `0xC10000` | **3 MB** | **the YOLO11n model** — `coco_detect.espdl`, 2,989,408 B, memory-mapped from this partition by ESP-DL's `fbs_loader` | full `flash` |
+| `coredump` | `0xF10000` | 64 KB | panic dumps — ESP-Mosaico only | — |
 
-**What fills the 8 MB app partition.** The object-detection model has no partition of its own:
-`espressif/coco_detect` links the YOLO11n `.espdl` into the image as data, so
-`libespressif__coco_detect.a` is 2.99 MB — **42% of the image**, and all but 1.3 KB of that is
-`.rodata` — while the ESP-DL runtime that executes it is another 2.02 MB, **28%**. Model plus runtime
-are 70% of the app, which is why `app-flash` moves ~7 MB every iteration. The rest is the frame:
-esp-sr's MultiNet G2P (0.62 MB), LVGL (0.40 MB), and the IDF subset. Figures from
-`idf.py --preset korvo1 size-components`; the linked model's bounds are `_binary_coco_detect_espdl_start`
-to `_end` in `build/korvo1/tinyml-demo-esp32s31.map` (0x4032c550–0x406062b0).
+**The detection model has a partition of its own.** `espressif/coco_detect` supports three
+locations for the `.espdl` through a Kconfig choice (`model location`): linked into the app as
+rodata, read from a flash partition, or read from an SD card. This project uses the partition, so
+`libespressif__coco_detect.a` shrinks from 2.99 MB to **1.3 KB** — just the wrapper code — and the
+model is written to `coco_det` by `idf.py flash`, which the component arranges itself through
+`esptool_py_flash_to_partition`. The partition label `coco_det` is not ours to pick: it is
+`coco_detect.cpp:8-9`, and the loader finds it with `esp_partition_find_first(DATA, SUBTYPE_ANY,
+"coco_det")`. At boot it logs the sizes before mapping:
+
+```
+I (6731) FbsLoader: The storage free size is 61568 KB
+I (6731) FbsLoader: The partition size is 3072 KB
+```
+
+**What fills the 4.14 MB app image** (Korvo-1, `idf.py --preset korvo1 size-components`): the ESP-DL
+runtime that executes the model is the largest tenant at **2.02 MB, 49%**; ESP-SR's MultiNet G2P
+grammar is 0.62 MB (15%); LVGL is 0.40 MB (10%); the rest is IDF, the C++ runtime and the
+application. The model itself is no longer here — it is the `coco_det` partition above.
 
 ### What to flash, and when
 
 | What changed | Command | Why |
 |---|---|---|
-| application code | `app-flash` | only `factory` differs — ~75 s for 7.1 MB |
+| application code | `app-flash` | only `factory` differs — **34 s** for 4.1 MB |
+| the detection model (a different `coco_detect` variant) | full `flash` | `coco_det` is written only by a full flash; `app-flash` does not touch it |
 | `CONFIG_SR_*` (a different wake word or command model), or `partitions.csv` | full `flash` | `srmodels.bin` is a *new* file; a stale one left on the chip makes the board panic at boot while the model is parsed |
 | the IDF version/toolchain, or anything that changes the bootloader | full `flash` | bootloader and app must come from the same build; an app-only flash on top of a changed bootloader boot-loops |
 | a board that has never been flashed, or after `erase-flash` | full `flash` | there is nothing to preserve |
 | nothing — you only want the console | `monitor` | |
 
-**Why the model partition is usually skipped.** `idf.py flash` passes `--skip-flashed`, so it writes
-only the partitions whose image differs from what is already on the chip. A routine build that
-changed nothing but application code therefore does **not** spend 43 s rewriting the 3 MB model
-partition. Raw `esptool write-flash` has no such check: it writes every image in the list, every
-time. That is the practical reason to prefer `idf.py flash`, and to keep the `esptool` form for
-machines that have no IDF.
+**Why the two model partitions are usually skipped.** `idf.py flash` passes `--skip-flashed`, so it
+compares each image with what is already on the chip and writes only what differs. Verified on the
+Korvo-1 by re-running a full `esptool write-flash --skip-flashed` with all six images already in
+place — every one was skipped, including the 3 MB `coco_det`:
 
-Measured on the Korvo-1 over its CP2102N bridge at `-b 921600`: the model partition, 3,052,231 B in
-43 s; the app, 7,137,328 B in 74 s. The ESP-Mosaico's USB-OTG path is slower — the same class of app
-image took 153 s.
+```
+'srmodels.bin'        at 0x00810000 already in flash, skipping write.
+'coco_detect.espdl'   at 0x00c10000 already in flash, skipping write.
+```
+
+Raw `esptool write-flash` without the flag has no such check: it writes every image in the list,
+every time. That is the practical reason to prefer `idf.py flash`, and to keep the `esptool` form
+for machines that have no IDF.
+
+Measured on the Korvo-1 over its CP2102N bridge at `-b 921600`: the app, 4,147,936 B in **34 s**;
+`srmodels.bin`, 3,052,232 B in 43 s; `coco_detect.espdl`, 2,989,408 B in 40 s. For comparison, the
+same application code with the model linked into it is 7,137,520 B and takes **74 s** — that 40 s is
+what the partition saves on every app-only update. The ESP-Mosaico's USB-OTG path is slower: its
+4,322,736 B app took **75 s**, where the old 7.3 MB image took 153 s.
 
 **Preferred: let `idf.py` do it**, from inside the container with the devkit's USB port passed
 through (`--device=/dev/ttyUSB0`, or in the DevContainer's `runArgs`):
@@ -183,8 +205,9 @@ idf.py --preset korvo1 -p /dev/ttyUSB0 app-flash   # app partition only
 idf.py --preset korvo1 -p /dev/ttyUSB0 monitor     # console + panic decoding
 ```
 
-`flash` writes bootloader, partition table, `ota_data`, the ESP-SR models and the app at the offsets
-in `build/<devkit>/flash_args`. `app-flash` writes only `0x10000`.
+`flash` writes bootloader, partition table, `ota_data`, both model partitions and the app at the
+offsets in `build/<devkit>/flash_args`. `app-flash` writes only `0x10000` — see
+`build/<devkit>/flash_app_args`, which is one line.
 
 **The same thing with `esptool` alone** — for a machine that has `esptool` but no IDF (a flash
 runner, a CI box). These are the offsets `idf.py build` prints; the flags come from the same
@@ -205,11 +228,13 @@ esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   0x8000  build/korvo1/partition_table/partition-table.bin \
   0xd000  build/korvo1/ota_data_initial.bin \
   0x810000 build/korvo1/srmodels/srmodels.bin \
+  0xc10000 build/korvo1/espdl_models/coco_detect.espdl \
   0x10000 build/korvo1/tinyml-demo-esp32s31.bin
 ```
 
-Leaving out `srmodels.bin` from that list is the `app-flash` case: correct as long as the model
-partition already holds the models the current `sdkconfig` selects.
+Leaving out both model images from that list is the `app-flash` case: correct as long as `model`
+already holds the ESP-SR models the current `sdkconfig` selects and `coco_det` already holds the
+detection model the current build packed.
 
 ## Serial logs
 
