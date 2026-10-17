@@ -23,7 +23,7 @@ Requires Docker and a devkit over USB. Nothing is installed on the host — the 
 the container, and it needs the USB device passed through.
 
 ```bash
-# 1. Build + flash, inside the container (korvo1, or --preset mosaico)
+# 1. Build + flash, inside the container (ESP32-S31-Korvo-1)
 docker run --rm -it -v "$PWD":/project -w /project --device=/dev/ttyUSB0 \
   espressif/idf:latest bash
 idf.py --preset korvo1 -p /dev/ttyUSB0 flash
@@ -42,6 +42,31 @@ a crash prints a backtrace with function names instead of raw addresses.
 
 A VS Code DevContainer does **not** forward USB devices by default — it needs `--device=/dev/ttyUSB0`
 in its `runArgs` before flash or monitor can reach a devkit from inside it.
+
+### ESP-Mosaico
+
+Same two commands, but this board has to be put into download mode first, and its console is not on
+USB.
+
+**1. Download mode.** Connect the Type-C cable, then hold **BOOT** while short-pressing **POWER**.
+The screen stays black — that is download mode, and it is normal. The board has no auto-download
+circuit, so `idf.py flash` cannot reset it into the bootloader by itself: every flash starts here.
+Per the [vendor firmware-update guide](https://mosaico.espressif.com/firmware-update/), which also
+offers a browser flasher for the stock firmware.
+
+**2. Flash.** The Type-C port enumerates as `/dev/ttyACM0`:
+
+```bash
+idf.py --preset mosaico -p /dev/ttyACM0 flash
+```
+
+**3. Monitor.** This build's console is UART, not USB: the left-slot camera module drives D2 on
+GPIO33, the pad USB Serial/JTAG uses (`devkits/mosaico/sdkconfig.defaults`). Read it through a
+USB-UART bridge on the right module header's TX0/RX0 pins:
+
+```bash
+idf.py --preset mosaico -p /dev/ttyUSB0 monitor
+```
 
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the
 detections appear beside it.
@@ -69,23 +94,14 @@ tasks, `Detector` owns the inference task, `MainScreen` and `Splash` are the LVG
 Both diagrams are generated from this repository and source-backed: every component carries
 the file and line range that proves it. They are **generated files** — edit the JSON, never the HTML.
 
-| Diagram | Static render | Interactive | What it answers |
-|---|---|---|---|
-| `architecture` | [architecture.png](docs/architecture/architecture.png) | [architecture.html](docs/architecture/architecture.html) | What the system is made of: the application layer, `components/devkit_api` as the only board seam, the two devkit implementations, `esp_video`, and the third-party stack |
-| `runtime` | [runtime.png](docs/architecture/runtime.png) | [runtime.html](docs/architecture/runtime.html) | Where data crosses tasks: feed → AFE → detect → command → countdown → capture → conversions → inference → screen |
+| Diagram | Interactive | What it answers |
+|---|---|---|
+| `architecture` | [architecture.html](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/architecture.html) | What the system is made of: the application layer, `components/devkit_api` as the only board seam, the two devkit implementations, `esp_video`, and the third-party stack |
+| `runtime` | [runtime.html](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/runtime.html) | Where data crosses tasks: feed → AFE → detect → command → countdown → capture → conversions → inference → screen |
 
 The runtime path, task by task:
 
 ![Runtime: voice to photo across tasks](docs/architecture/runtime.png)
-
-GitHub does not render an `.html` blob, so the interactive files open through htmlpreview — replace
-`github.com` with `htmlpreview.github.io/?` in the blob URL:
-
-- [architecture — interactive](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/architecture.html)
-- [runtime — interactive](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/runtime.html)
-
-Downloading one and opening it locally works too, and needs no network: each is a single
-self-contained HTML page.
 
 ## Documents
 
@@ -114,6 +130,7 @@ self-contained HTML page.
 **ESP-Mosaico**
 
 - [ESP-Mosaico user guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp-mosaico/user_guide.html)
+- [Firmware update — download mode and the browser flasher](https://mosaico.espressif.com/firmware-update/)
 - [mosaico.espressif.com](https://mosaico.espressif.com/)
 - [ESP-Mosaico BSP source](https://github.com/esp-mosaico/esp-mosaico-bsp) — `components/esp-mosaico-bsp` and `components/mosaico_module_camera`, both at the pinned commit
 - Camera module: the left slot's module carries an OV3640 or SC101IOT sensor — see the user guide's camera section
