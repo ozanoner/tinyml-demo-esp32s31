@@ -117,6 +117,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
@@ -125,7 +126,10 @@ jobs:
                    runtime.json runtime.html runtime.png; do
             cp "docs/architecture/$f" "$stage/${f%.*}-$tag.${f##*.}"
           done
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "$tag" --generate-notes
+          # The build workflow publishes to the same tag, so tolerate losing that race.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes \
+              || gh release view "$tag" >/dev/null
+          fi
           gh release upload "$tag" "$stage"/* --clobber
           gh release view "$tag" --json assets --jq '.assets[].name'

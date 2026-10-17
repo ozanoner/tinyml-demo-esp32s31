@@ -109,11 +109,16 @@ jobs:
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh has no git context to infer the repo from.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "$tag" --generate-notes
+          # The diagrams workflow publishes to the same tag, so tolerate losing that race.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes \
+              || gh release view "$tag" >/dev/null
+          fi
           gh release upload "$tag" dist/* --clobber
           echo "--- assets on $tag"
           gh release view "$tag" --json assets --jq '.assets[].name'
