@@ -3,6 +3,7 @@
  * @brief VoicePipeline implementation — AFE + WakeNet + MultiNet + timeout.
  */
 
+#include "sdkconfig.h"          /* CONFIG_AUDIO_METRICS (#53) */
 #include "voice_pipeline.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -15,15 +16,21 @@
 static constexpr const char *TAG = "voice";
 
 /* ---------------------------------------------------------------------------
- *  Diagnostic level metering (issue #46)
+ *  Diagnostic level metering (issue #46) - built only when CONFIG_AUDIO_METRICS
+ *  is set (issue #53)
  *
  *  Measurement-only: accumulates the level of the samples on each side of the
  *  AFE — the raw codec buffer the feed task hands to it, and the single channel
  *  it hands to MultiNet — and prints one summary line per second. Nothing here
- *  changes what is fed, detected or dispatched.
+ *  changes what is fed, detected or dispatched. It does, however, walk every
+ *  sample of every frame in both audio tasks, so release builds compile it out.
  * ------------------------------------------------------------------------- */
 
 namespace {
+
+/* Compiled out of release builds - see CONFIG_AUDIO_METRICS in
+ * main/Kconfig.projbuild (issue #53). */
+#if CONFIG_AUDIO_METRICS
 
 constexpr int     kMaxChannels = 4;        /* channels a feed frame may carry */
 constexpr int     kMaxCandidates = 5;      /* MultiNet candidates logged per hit */
@@ -66,6 +73,8 @@ struct LevelStats {
         clipped = 0;
     }
 };
+
+#endif  /* CONFIG_AUDIO_METRICS */
 
 }  // namespace
 
@@ -320,8 +329,10 @@ void VoicePipeline::feed_task_fn(void *arg)
         return;
     }
 
+#if CONFIG_AUDIO_METRICS
     LevelStats ch_stats[kMaxChannels];      /* diagnostic, one per codec channel */
     int64_t    last_log_us = esp_timer_get_time();
+#endif
 
     while (self->task_flag_) {
         esp_err_t ret = self->audio_->read(i2s_buff, buf_len);
@@ -332,6 +343,7 @@ void VoicePipeline::feed_task_fn(void *arg)
         }
         self->afe_handle_->feed(self->afe_data_, i2s_buff);
 
+#if CONFIG_AUDIO_METRICS
         /* ---- Diagnostic: level at the codec, per channel ---------------- */
         for (int ch = 0; ch < nch && ch < kMaxChannels; ch++) {
             for (int i = 0; i < chunk_size; i++) {
@@ -354,6 +366,7 @@ void VoicePipeline::feed_task_fn(void *arg)
             ESP_LOGI(TAG, "mic: ch=%d  %s", nch, line);
             last_log_us = now_us;
         }
+#endif
     }
 
     heap_caps_free(i2s_buff);
@@ -474,8 +487,10 @@ void VoicePipeline::detect_task_fn(void *arg)
              fetch_chunk, multinet->get_samp_chunksize(model_data),
              multinet->get_samp_rate(model_data));
 
+#if CONFIG_AUDIO_METRICS
     LevelStats out_stats;                   /* diagnostic: what MultiNet is fed */
     int64_t    last_log_us = esp_timer_get_time();
+#endif
     bool       geometry_logged = false;
 
     while (self->task_flag_) {
@@ -485,12 +500,14 @@ void VoicePipeline::detect_task_fn(void *arg)
             continue;
         }
 
+#if CONFIG_AUDIO_METRICS
         /* ---- Diagnostic: level of the AFE output, peak/mean/clipping ---- */
         if (res->data != nullptr) {
             for (int i = 0; i < fetch_chunk; i++) {
                 out_stats.add(res->data[i]);
             }
         }
+#endif
 
         if (!geometry_logged) {
             ESP_LOGI(TAG, "afe: data_size=%d bytes  raw_data_channels=%d",
@@ -498,6 +515,7 @@ void VoicePipeline::detect_task_fn(void *arg)
             geometry_logged = true;
         }
 
+#if CONFIG_AUDIO_METRICS
         /* Periodic level summary */
         const int64_t now_us = esp_timer_get_time();
         if (now_us - last_log_us >= kLogPeriodUs) {
@@ -514,6 +532,7 @@ void VoicePipeline::detect_task_fn(void *arg)
             out_stats.reset();
             last_log_us = now_us;
         }
+#endif
 
         /* ---- Wake word -------------------------------------------------
          * A dual-mic AFE reports the wake word in two stages: DETECTED, then
@@ -559,6 +578,7 @@ void VoicePipeline::detect_task_fn(void *arg)
                 esp_mn_results_t *mn_result = multinet->get_results(
                     model_data);
                 if (mn_result != nullptr && mn_result->num > 0) {
+#if CONFIG_AUDIO_METRICS
                     /* Diagnostic: every candidate the model reported, with its
                      * score, ahead of the threshold gate below. */
                     for (int i = 0; i < mn_result->num && i < kMaxCandidates; i++) {
@@ -566,6 +586,7 @@ void VoicePipeline::detect_task_fn(void *arg)
                                  i + 1, mn_result->command_id[i],
                                  (double)mn_result->prob[i]);
                     }
+#endif
 
                     float prob = mn_result->prob[0];
                     if (prob >= self->command_threshold_) {
