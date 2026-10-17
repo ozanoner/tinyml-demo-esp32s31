@@ -91,7 +91,24 @@ static void return_to_command_mode()
  *  (issue #52).
  * ------------------------------------------------------------------------- */
 
-/** What the "cheese" countdown ends with. Runs in the capture worker task. */
+/**
+ * What the "cheese" countdown ends with. Runs in the capture worker task.
+ *
+ * Every use of the captured frame happens here, in this order, while the frame is
+ * still the one the camera owns (issue #57):
+ *
+ *     capture -> to_model_input -> to_display -> stage -> detect_async
+ *
+ * to_display() comes after to_model_input() because both conversions read the same
+ * frame (their output buffers are the devkit's own and separate). Nothing after
+ * this function returns reads the frame again: the inference callback publishes its
+ * results against the frame this cycle staged.
+ *
+ * "Valid until the next capture()" (devkit/camera.hpp) is enforced rather than
+ * assumed here — the worker is single and a second capture is refused while this
+ * one runs (main_screen.cpp:780-789), so no capture can be in flight over the
+ * conversions or the copy.
+ */
 static void start_capture_cycle()
 {
     if (g_camera == nullptr || !g_camera->is_ok()) {
@@ -143,32 +160,38 @@ static void start_capture_cycle()
 
     if (g_ui != nullptr) g_ui->set_status(ui::text::kStateAnalysing);
 
+    /* The panel's view of the same frame, copied into the screen's own buffer while
+     * this cycle still owns the frame. A failure here costs the frame, not the
+     * detections: the token below is what pairs a result with its frame. */
+    uint32_t generation = 0;
+    if (g_ui != nullptr) {
+        devkit::Image disp_img{};
+        if (g_camera->to_display(frame, want.width, want.height, disp_img) != ESP_OK) {
+            ESP_LOGE(TAG, "to_display failed — no frame for the result screen");
+        } else {
+            generation = g_ui->stage_frame(disp_img.data, disp_img.width, disp_img.height,
+                                           disp_img.stride, disp_img.bytes);
+            if (generation == 0) {
+                ESP_LOGE(TAG, "frame not staged — no frame for the result screen");
+            }
+        }
+    }
+
     if (g_detector != nullptr) {
         const bool started = g_detector->detect_async(
             model_img.data, model_img.width, model_img.height,
             model_img.order,
-            [frame, want](const char * /*text*/,
-                          const std::list<dl::detect::result_t> &results) {
+            [generation](const char * /*text*/,
+                         const std::list<dl::detect::result_t> &results) {
                 /* Analysis finished — leave "Analysing image..." and return to
                  * command mode while the result is on screen. */
                 return_to_command_mode();
 
-                /* Show the frame the way this panel expects it, at the geometry
-                 * the detector saw. The devkit writes into its own buffer and the
-                 * screen copies it synchronously. */
-                devkit::Image disp_img{};
-                if (g_camera->to_display(frame, want.width, want.height,
-                                         disp_img) != ESP_OK) {
-                    ESP_LOGE(TAG, "to_display failed — no result screen");
-                    return;
-                }
-
+                /* No camera buffer is read here: the frame was converted and staged
+                 * by the cycle that captured it, and the token keeps the two paired
+                 * (issue #57). */
                 if (g_ui == nullptr) return;
-                g_ui->show_result(disp_img.data,
-                                  disp_img.width, disp_img.height,
-                                  disp_img.stride, disp_img.bytes,
-                                  results);
-                /* The directive for the screen that is now up. */
+                g_ui->show_result(generation, results);
             });
         if (!started) {
             ESP_LOGE(TAG, "detect_async did not start — no result screen");
