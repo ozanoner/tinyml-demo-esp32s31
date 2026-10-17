@@ -62,24 +62,16 @@ in its `runArgs` before flash or monitor can reach a devkit from inside it.
 
 ### ESP-Mosaico
 
-The board cannot be treated like the Korvo-1: it has no auto-download circuit, and its console is not
-on its USB port.
-
 **1. Download mode.** Connect the Type-C cable, then hold **BOOT** while short-pressing **POWER**.
-The screen stays black — that is download mode, and it is normal. The board has no auto-download
-circuit, so `idf.py flash` cannot reset it into the bootloader by itself: every flash starts here.
-Per the [vendor firmware-update guide](https://mosaico.espressif.com/firmware-update/), which also
-offers a browser flasher for the stock firmware.
 
 **2. Flash.** The board's own USB port is the one that enumerates as an Espressif ESP32-S31 in
 download mode; check the number before flashing, because it is not always `ttyACM0`:
 
 ```bash
-ls /dev/serial/by-id/     # usb-Espressif_ESP32-S31_… is the board; anything else is a bridge
 idf.py --preset mosaico -p /dev/ttyACM0 flash
 ```
 
-**3. Monitor — the console is UART0, so it needs a bridge.** This build's console is UART, not USB:
+**3. Monitor** This build's console is UART, not USB:
 the left-slot camera module drives D2 on GPIO33, the pad USB Serial/JTAG uses
 (`devkits/mosaico/sdkconfig.defaults`). The chip's own USB port serves download only, so watch the
 console on the right-hand header H1 through a 3.3 V USB-UART bridge:
@@ -90,8 +82,7 @@ console on the right-hand header H1 through a 3.3 V USB-UART bridge:
 | pin 13 | `RX0` (GPIO59) — console in | bridge **TX** |
 | pin 20 | GND | GND |
 
-Leave pins 17/18/19 (`5V_IN` / `5V_OUT` / `VCC_3V3`) alone — the Mosaico powers itself, and GND must
-be common. If a capture returns nothing and the wiring looks right, swap RX and TX.
+If a capture returns nothing and the wiring looks right, swap RX and TX.
 
 - **Raspberry Pi Pico 2** — what this project uses: GP1 to the Mosaico's `TX0`, GP0 to its `RX0`,
   GND to GND, with a small MicroPython UART-to-USB passthrough running on it. Plug the Pico into the
@@ -102,6 +93,19 @@ be common. If a capture returns nothing and the wiring looks right, swap RX and 
 - **Any 3.3 V USB-TTL adapter** — CP2102, FT232, CH340: the same three wires, no firmware needed,
   and the adapter's own `/dev/ttyUSB*` is the console port.
 
+#### Flash in a browser, without a toolchain
+
+Espressif's [firmware-update page](https://mosaico.espressif.com/firmware-update/) can flash the board
+from Chrome or Edge over Web Serial:
+
+1. Take `merged-mosaico.bin` from the [releases page](https://github.com/ozanoner/tinyml-demo-esp32s31/releases)
+   — the release workflow attaches it per devkit (~15 MB). That single image is the whole flash set.
+2. On the page choose **Local firmware**, then **Choose bin firmware** and pick that file.
+3. **Connect device**, then **Flash firmware**.
+
+![The ESP-Mosaico web flasher, flashing merged-mosaico.bin](docs/mosaico-web-flasher.png)
+   
+### Testing
 Having the firmware flashed, you can test it:  
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the
 detections appear beside it.

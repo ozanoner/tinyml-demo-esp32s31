@@ -10,7 +10,7 @@
       "url": "https://github.com/ozanoner/tinyml-demo-esp32s31.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "e7fdf6fcaa45726de996c577f0549e10dfe06774"
+      "revision": "6c971808677f5cd8dd16bcd12cef015745e80b30"
     }
   },
   "components": [

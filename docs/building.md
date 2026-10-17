@@ -236,6 +236,35 @@ Leaving out both model images from that list is the `app-flash` case: correct as
 already holds the ESP-SR models the current `sdkconfig` selects and `coco_det` already holds the
 detection model the current build packed.
 
+### Flashing from a browser (ESP-Mosaico)
+
+The one route that needs no host toolchain at all: the vendor's
+[firmware-update page](https://mosaico.espressif.com/firmware-update/) talks to the board over Web
+Serial and writes an image from the browser. It is Mosaico-only — the page is per-board, and the
+Korvo-1 has no equivalent.
+
+It writes a **full image at `0x0000`**, so the file it wants is the release's `merged-mosaico.bin`
+(15,637,856 B) and not `app-mosaico.bin`, which belongs at `0x10000`. `merged-<devkit>.bin` is the
+whole set in one image — bootloader, partition table, `ota_data`, both model partitions and the app —
+which is exactly why the release publishes it.
+
+Measured on this board: `Writing data with filesize: 15637856 … Took 121102ms`, i.e. about two
+minutes, after the page verified the chip as `ESP32-S31 (v1.0 / v1.2 supported)`.
+
+Worth knowing before using it:
+
+- **It erases the board.** The page states "This will clear existing device data" and makes you
+  confirm. NVS goes with it; nothing else here persists anything, so the cost is a re-flash of the
+  models if you were on an older layout.
+- **`Default firmware` on that page is the vendor image** (`ESP-Mosaico-Claw_v0.5.0.bin` at the time
+  of writing), not this application. It is the way back to stock, and it is the fallback if a build
+  ever leaves the board unresponsive while the ROM loader still answers.
+- **Web Serial needs a Chromium desktop browser** over HTTPS (Chrome or Edge; Firefox and Safari do not
+  implement it), and the board has to be in download mode if **Connect device** cannot find it — see
+  the Mosaico steps in the README.
+
+![The ESP-Mosaico web flasher writing merged-mosaico.bin](mosaico-web-flasher.png)
+
 ## Serial logs
 
 ```bash
@@ -252,3 +281,36 @@ the same job and additionally hands the ELF to the panic decoder. The applicatio
 
 The ESP-Mosaico's camera module claims the USB Serial/JTAG pads, so its console is UART-only and
 has to be read through a UART bridge rather than a USB port.
+
+## Releases
+
+A tag is the release. `v*` starts the build workflow, which can also be started by hand from the
+Actions tab:
+
+| | On a tag | Manual run |
+|---|---|---|
+| `build` | checks that the diagrams are **stamped for this tag**, then builds both presets and attaches the images to the release | builds and uploads the images to the run summary; no stamp check, no release |
+
+So a release takes **two commits**: the code, and a commit on top that refreshes the diagrams and
+stamps them for the tag — pinned to the code commit it sits on, touching nothing except
+`docs/architecture/`, and reviewed like any other change. The tag goes on the stamped commit.
+
+The stamp is one line at the end of each generated diagram page:
+
+```
+<!-- release: v0.1.0 @ 8c1d0f2… -->
+```
+
+The release refuses to build if a diagram is unstamped, stamped for a different tag, or if code has
+moved since the stamped commit. The expensive half of the gate — re-resolving every cited
+`path:line` and running the visual check — happens in the pre-release step, on the machine that
+regenerates the diagrams, and is not repeated in CI: it would cost a Node toolchain and a browser
+download to relearn something already proven.
+
+Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
+(`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the component graph through the
+committed `dependencies.lock`.
+
+`merged-<devkit>.bin` is the whole flash set in one image — write it at `0x0` and the board is
+complete, partitions and both models included (`esptool write-flash 0x0 merged-<devkit>.bin` with the
+same `--flash-mode dio --flash-size 16MB --flash-freq 80m` flags).

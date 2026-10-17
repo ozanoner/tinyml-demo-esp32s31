@@ -14,8 +14,8 @@ size_info_*.txt
 # pytest-embedded log folder
 pytest_embedded_log/
 
-# idf-component-manager output
-dependencies.lock
+# idf-component-manager output. `dependencies.lock` IS committed: it pins the
+# exact component graph, and CI builds the release artefacts from it.
 managed_components/
 
 # archify run artefacts — the generated diagrams and their JSON sources are
