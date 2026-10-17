@@ -62,14 +62,7 @@ in its `runArgs` before flash or monitor can reach a devkit from inside it.
 
 ### ESP-Mosaico
 
-The board cannot be treated like the Korvo-1: it has no auto-download circuit, and its console is not
-on its USB port.
-
 **1. Download mode.** Connect the Type-C cable, then hold **BOOT** while short-pressing **POWER**.
-The screen stays black — that is download mode, and it is normal. The board has no auto-download
-circuit, so `idf.py flash` cannot reset it into the bootloader by itself: every flash starts here.
-Per the [vendor firmware-update guide](https://mosaico.espressif.com/firmware-update/), which can also
-flash this app from a browser — see [Flash in a browser](#flash-in-a-browser-without-a-toolchain) below.
 
 **2. Flash.** The board's own USB port is the one that enumerates as an Espressif ESP32-S31 in
 download mode; check the number before flashing, because it is not always `ttyACM0`:
