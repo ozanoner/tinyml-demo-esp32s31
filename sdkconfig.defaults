@@ -25,3 +25,11 @@ CONFIG_SR_VADN_WEBRTC=y
 CONFIG_FLASH_COCO_DETECT_YOLO11N_S8_V1=
 CONFIG_FLASH_COCO_DETECT_YOLO11N_320_S8_V1=y
 CONFIG_COCO_DETECT_YOLO11N_320_S8_V1=y
+
+# Load the YOLO11n model from its own flash partition instead of linking it
+# into the app image (issue #69). The label "coco_det" is fixed by the
+# component (coco_detect.cpp:8-9), and the build flashes the packed .espdl
+# there via esptool_py_flash_to_partition. This is a Kconfig choice, so the
+# RODATA default has to be turned off explicitly.
+CONFIG_COCO_DETECT_MODEL_IN_FLASH_PARTITION=y
+# CONFIG_COCO_DETECT_MODEL_IN_FLASH_RODATA is not set
