@@ -68,8 +68,8 @@ on its USB port.
 **1. Download mode.** Connect the Type-C cable, then hold **BOOT** while short-pressing **POWER**.
 The screen stays black — that is download mode, and it is normal. The board has no auto-download
 circuit, so `idf.py flash` cannot reset it into the bootloader by itself: every flash starts here.
-Per the [vendor firmware-update guide](https://mosaico.espressif.com/firmware-update/), which also
-offers a browser flasher for the stock firmware.
+Per the [vendor firmware-update guide](https://mosaico.espressif.com/firmware-update/), which can also
+flash this app from a browser — see [Flash in a browser](#flash-in-a-browser-without-a-toolchain) below.
 
 **2. Flash.** The board's own USB port is the one that enumerates as an Espressif ESP32-S31 in
 download mode; check the number before flashing, because it is not always `ttyACM0`:
@@ -101,6 +101,29 @@ be common. If a capture returns nothing and the wiring looks right, swap RX and 
   soft-resetting the bridge clears it.
 - **Any 3.3 V USB-TTL adapter** — CP2102, FT232, CH340: the same three wires, no firmware needed,
   and the adapter's own `/dev/ttyUSB*` is the console port.
+
+#### Flash in a browser, without a toolchain
+
+The vendor's [firmware-update page](https://mosaico.espressif.com/firmware-update/) flashes the board
+from Chrome or Edge over Web Serial — no Docker, no `idf.py`, no `esptool`. It takes **this project's
+own build**, not just the stock firmware:
+
+1. Take `merged-mosaico.bin` from the [releases page](https://github.com/ozanoner/tinyml-demo-esp32s31/releases)
+   — the release workflow attaches it per devkit (~15 MB). That single image is the whole flash set,
+   which is what this page wants: it writes a full image at `0x0000`.
+2. On the page choose **Local firmware**, then **Choose bin firmware** and pick that file.
+3. **Connect device**, then **Flash firmware**, and confirm the data-clearing warning.
+
+It verifies the chip (`ESP32-S31 verified`) and finishes in about two minutes; the flash log ends with
+`Writing full image at 0x0000…` and `Flash complete.`
+
+![The ESP-Mosaico web flasher, flashing merged-mosaico.bin](docs/mosaico-web-flasher.png)
+
+**It erases what is on the board** — the page says so before it starts, so back up anything you need
+first. **Default firmware** on that page is the *vendor* image (`ESP-Mosaico-Claw`), not this app:
+the way back to stock, not a way to run the demo. If **Connect device** does not find the board, put it
+in download mode first — step 1 above. And do not feed it `app-mosaico.bin`: that image belongs at
+`0x10000`, while the browser writes at `0x0000`.
 
 Having the firmware flashed, you can test it:  
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the

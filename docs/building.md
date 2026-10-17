@@ -236,6 +236,35 @@ Leaving out both model images from that list is the `app-flash` case: correct as
 already holds the ESP-SR models the current `sdkconfig` selects and `coco_det` already holds the
 detection model the current build packed.
 
+### Flashing from a browser (ESP-Mosaico)
+
+The one route that needs no host toolchain at all: the vendor's
+[firmware-update page](https://mosaico.espressif.com/firmware-update/) talks to the board over Web
+Serial and writes an image from the browser. It is Mosaico-only — the page is per-board, and the
+Korvo-1 has no equivalent.
+
+It writes a **full image at `0x0000`**, so the file it wants is the release's `merged-mosaico.bin`
+(15,637,856 B) and not `app-mosaico.bin`, which belongs at `0x10000`. `merged-<devkit>.bin` is the
+whole set in one image — bootloader, partition table, `ota_data`, both model partitions and the app —
+which is exactly why the release publishes it.
+
+Measured on this board: `Writing data with filesize: 15637856 … Took 121102ms`, i.e. about two
+minutes, after the page verified the chip as `ESP32-S31 (v1.0 / v1.2 supported)`.
+
+Worth knowing before using it:
+
+- **It erases the board.** The page states "This will clear existing device data" and makes you
+  confirm. NVS goes with it; nothing else here persists anything, so the cost is a re-flash of the
+  models if you were on an older layout.
+- **`Default firmware` on that page is the vendor image** (`ESP-Mosaico-Claw_v0.5.0.bin` at the time
+  of writing), not this application. It is the way back to stock, and it is the fallback if a build
+  ever leaves the board unresponsive while the ROM loader still answers.
+- **Web Serial needs a Chromium desktop browser** over HTTPS (Chrome or Edge; Firefox and Safari do not
+  implement it), and the board has to be in download mode if **Connect device** cannot find it — see
+  the Mosaico steps in the README.
+
+![The ESP-Mosaico web flasher writing merged-mosaico.bin](mosaico-web-flasher.png)
+
 ## Serial logs
 
 ```bash
