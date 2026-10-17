@@ -260,13 +260,23 @@ Actions tab:
 
 | | On a tag | Manual run |
 |---|---|---|
-| `build` | **validates the committed architecture diagrams first** — every cited `path:line` re-resolved against the revision the diagram pins, the visual gate run, and the whole release refused if code moved since the diagrams were pinned — then builds both presets and attaches the images to the release | builds and uploads the images to the run summary; no diagram validation, no release |
+| `build` | checks that the diagrams are **stamped for this tag**, then builds both presets and attaches the images to the release | builds and uploads the images to the run summary; no stamp check, no release |
 
-So a release takes **two commits**: the code, and a commit on top that refreshes the diagrams —
-pinned to the code commit it sits on, and touching nothing except `docs/architecture/`. That second
-commit is reviewed like any other change, and the tag goes on it. The workflow never regenerates a
-diagram: a tag whose diagrams no longer describe its code fails before a single byte is built, with
-the offending paths printed.
+So a release takes **two commits**: the code, and a commit on top that refreshes the diagrams and
+stamps them for the tag — pinned to the code commit it sits on, touching nothing except
+`docs/architecture/`, and reviewed like any other change. The tag goes on the stamped commit.
+
+The stamp is one line at the end of each generated diagram page:
+
+```
+<!-- release: v0.1.0 @ 8c1d0f2… -->
+```
+
+The release refuses to build if a diagram is unstamped, stamped for a different tag, or if code has
+moved since the stamped commit. The expensive half of the gate — re-resolving every cited
+`path:line` and running the visual check — happens in the pre-release step, on the machine that
+regenerates the diagrams, and is not repeated in CI: it would cost a Node toolchain and a browser
+download to relearn something already proven.
 
 Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
 (`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the component graph through the
