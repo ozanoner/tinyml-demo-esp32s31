@@ -127,7 +127,7 @@ The runtime path, task by task:
 
 ## Documents
 
-- [docs/building.md](docs/building.md) — how one app builds for two devkits, flashing, serial logs, regenerating the diagrams
+- [docs/building.md](docs/building.md) — how one app builds for two devkits, flashing, serial logs
 - [docs/requirements.md](docs/requirements.md) — the SRS, with every acceptance criterion marked against the code
 
 ## References

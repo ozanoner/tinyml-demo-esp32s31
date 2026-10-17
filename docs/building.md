@@ -174,37 +174,3 @@ the same job and additionally hands the ELF to the panic decoder. The applicatio
 
 The ESP-Mosaico's camera module claims the USB Serial/JTAG pads, so its console is UART-only and
 has to be read through a UART bridge rather than a USB port.
-
-## Regenerating the architecture diagrams
-
-The two diagrams in `docs/architecture/` are generated, and their JSON is the source of truth. The
-generator is the `archify` skill installed in the Hermes profile, not a dependency of this
-repository. Requirements: Node.js ≥ 18, and a Chrome/Chromium on `PATH` (the `browser-check` gate
-drives a real browser).
-
-```bash
-A=~/.hermes/profiles/esp32-developer/skills/archify
-
-node $A/bin/archify.mjs finalize architecture docs/architecture/architecture.json \
-  docs/architecture/architecture.html --repo-root . --quality showcase
-node $A/bin/archify.mjs finalize sequence docs/architecture/runtime.json \
-  docs/architecture/runtime.html --repo-root . --quality showcase
-
-python3 tools/render_architecture_png.py docs/architecture/architecture.html docs/architecture/architecture.png
-python3 tools/render_architecture_png.py docs/architecture/runtime.html      docs/architecture/runtime.png
-```
-
-`finalize` runs all four gates — `validate`, `deliver`, `check`, `browser-check` — and stops at the
-first failure; a non-zero exit is a failure, not a warning. Two operational notes:
-
-- **A second run on the same output needs `--out-dir`.** Once an artifact has a browser-check
-  receipt, that output path owns it: give the next run its own directory, e.g.
-  `--out-dir docs/architecture/review-2`. Receipts are gitignored.
-- **Chrome needs `--no-sandbox` where unprivileged user namespaces are blocked** (Ubuntu 23.10+ /
-  AppArmor). archify passes no sandbox flag, so put a wrapper named `chromium` on `PATH` that execs
-  the real binary with `--no-sandbox --disable-dev-shm-usage "$@"`.
-
-When the diagram's content is re-read after a code change, move `meta.repository.revision` in each
-JSON to the commit the sources were read at — archify verifies every cited path and line range
-against that revision and fails if a range runs past the end of the file.
-
