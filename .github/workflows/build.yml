@@ -134,12 +134,11 @@ jobs:
           pattern: tinyml-demo-*
           merge-multiple: true
 
-      # Pinned by commit rather than by tag: `v2` is mutable, and this job holds
-      # contents: write. v2.6.2 = 3bb12739c298aeb8a4eeaf626c5b8d85266b0e65.
-      # The action reads GITHUB_REPOSITORY from the environment, so unlike the gh
-      # shell it replaced it needs no checkout and no GH_REPO workaround.
+      # Latest release of the action at the time of writing. v3 moved the runtime from
+      # Node 20 to Node 24 (no input changes); v2.6.2 is the last Node 20 line. `v3` is
+      # the floating major tag if you would rather track 3.x automatically.
       - name: Attach the images to the release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
