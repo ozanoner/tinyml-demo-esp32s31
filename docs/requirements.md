@@ -159,7 +159,7 @@ Run object detection on the captured camera frame using **YOLO11n** (320×320, i
 
 **Acceptance Criteria:**
 - [x] ESP-DL component added — pinned `espressif/esp-dl` 3.3.8 in `main/idf_component.yml`
-- [x] YOLO11n model loaded (pre-quantized, via `espressif/coco_detect` 0.4.0) — `COCODetect(YOLO11N_320_S8_V1, false)`, linked into the application image rather than a separate partition
+- [x] YOLO11n model loaded (pre-quantized, via `espressif/coco_detect` 0.4.0) — `COCODetect(YOLO11N_320_S8_V1, false)`, read from the `coco_det` flash partition (coco_detect's `model location` Kconfig set to the partition), not linked into the app image
 - [x] Model input tensor populated from the camera frame buffer
 - [x] Inference runs on-device (no cloud) — in a dedicated PSRAM-backed FreeRTOS task
 - [x] Detection results: bounding boxes, class labels, confidence scores
@@ -197,8 +197,11 @@ Display the captured camera frame on the LCD, overlaid with object detection bou
 - ESP-DL includes the YOLO11n `.espdl` model that `espressif/coco_detect` ships; nothing else
 
 **Model storage (flash):**
-- A `model` partition is defined in each devkit's `partitions.csv` with 6 MB for the ESP-SR models
-- Those models are flashed to that partition — they are not part of the application binary. The YOLO11n model is the opposite: `coco_detect` links it into the app image, in the 8 MB `factory` partition
+- A `model` partition is defined in each devkit's `partitions.csv` with 4 MB for the ESP-SR models,
+  and a `coco_det` partition of 3 MB for the YOLO11n detection model
+- Both are flashed to their partitions and read at runtime — they are not part of the application
+  binary. The ESP-SR models are mounted as SPIFFS and read by `esp_srmodel_init`; the YOLO11n model is
+  memory-mapped from `coco_det` by ESP-DL's `fbs_loader`
 
 **Runtime memory allocation:**
 - **SRAM (internal):** reserved for time-critical audio paths:
