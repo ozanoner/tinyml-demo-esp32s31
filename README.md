@@ -20,24 +20,28 @@ One application, two devkits: the **ESP32-S31-Korvo-1** (800×480) and the **ESP
 ## Run it in 60 seconds
 
 Requires Docker and a devkit over USB. Nothing is installed on the host — the toolchain lives in
-the container.
+the container, and it needs the USB device passed through.
 
 ```bash
-# 1. Build (inside the DevContainer, or in the same image by hand)
-docker run --rm -it -v "$PWD":/project -w /project --name tinyml-demo-esp32s31 \
+# 1. Build + flash, inside the container (korvo1, or --preset mosaico)
+docker run --rm -it -v "$PWD":/project -w /project --device=/dev/ttyUSB0 \
   espressif/idf:latest bash
-source /opt/esp/idf/export.sh        # needed with `docker exec`; a plain `docker run -it` already has it
-idf.py --preset korvo1 build         # or: --preset mosaico
+idf.py --preset korvo1 -p /dev/ttyUSB0 flash
 
-# 2. Flash — app partition only; add the other offsets on a first flash (see docs/building.md)
-esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
-  --before default-reset --after hard-reset \
-  write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
-  0x10000 build/korvo1/tinyml-demo-esp32s31.bin
-
-# 3. Talk to it
-python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
+# 2. Watch it boot — Ctrl-] to exit
+idf.py --preset korvo1 -p /dev/ttyUSB0 monitor
 ```
+
+`idf.py flash` writes the whole set the build produced (bootloader, partition table, ota_data, the
+ESP-SR models and the app) at the offsets in `build/<devkit>/flash_args`, and skips the partitions
+that are already up to date. After a change to application code alone, `idf.py --preset <devkit>
+-p /dev/ttyUSB0 app-flash` writes only the app partition.
+
+`idf.py monitor` reads the console at the right baud rate and hands the ELF to the panic decoder, so
+a crash prints a backtrace with function names instead of raw addresses.
+
+A VS Code DevContainer does **not** forward USB devices by default — it needs `--device=/dev/ttyUSB0`
+in its `runArgs` before flash or monitor can reach a devkit from inside it.
 
 Say "Hi, ESP", then "cheese". The status line counts down, the picture box fills, and the
 detections appear beside it.
@@ -60,14 +64,28 @@ the pipeline runs one channel.
 `main/` holds the application: `App` owns and wires everything, `VoicePipeline` runs the two audio
 tasks, `Detector` owns the inference task, `MainScreen` and `Splash` are the LVGL surfaces.
 `components/devkit_api` is the board seam — `Board` / `Audio` / `Display` / `Camera` — and
-`devkits/korvo1` and `devkits/mosaico` implement it. See
-[docs/architecture](docs/architecture/README.md) for the interactive diagrams, the task table and
-the regeneration command.
+`devkits/korvo1` and `devkits/mosaico` implement it.
+
+Both diagrams below are generated from this repository and source-backed: every component carries
+the file and line range that proves it. They are **generated files** — edit the JSON, never the HTML.
+
+| Diagram | Static render | Interactive | What it answers |
+|---|---|---|---|
+| `architecture` | [architecture.png](docs/architecture/architecture.png) | [architecture.html](docs/architecture/architecture.html) | What the system is made of: the application layer, `components/devkit_api` as the only board seam, the two devkit implementations, `esp_video`, and the third-party stack |
+| `runtime` | [runtime.png](docs/architecture/runtime.png) | [runtime.html](docs/architecture/runtime.html) | Where data crosses tasks: feed → AFE → detect → command → countdown → capture → conversions → inference → screen |
+
+GitHub does not render an `.html` blob, so the interactive files open through htmlpreview — replace
+`github.com` with `htmlpreview.github.io/?` in the blob URL:
+
+- [architecture — interactive](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/architecture.html)
+- [runtime — interactive](https://htmlpreview.github.io/?https://github.com/ozanoner/tinyml-demo-esp32s31/blob/main/docs/architecture/runtime.html)
+
+Downloading one and opening it locally works too, and needs no network: each is a single
+self-contained HTML page.
 
 ## Documents
 
-- [docs/architecture](docs/architecture/README.md) — the two diagrams, what each shows, how to regenerate them
-- [docs/building.md](docs/building.md) — how one app builds for two devkits, flashing, serial logs
+- [docs/building.md](docs/building.md) — how one app builds for two devkits, flashing, serial logs, regenerating the diagrams
 - [docs/requirements.md](docs/requirements.md) — the SRS, with every acceptance criterion marked against the code
 
 ## References

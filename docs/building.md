@@ -120,19 +120,31 @@ building: `sdkconfig` is authoritative and defaults only fill values it does not
 Both devkits have **16 MB** flash, and the partition table puts the app in an 8 MB `factory`
 partition at `0x10000`, with a 6 MB `model` partition at `0x810000` for the ESP-SR models.
 
-**Routine update — app only.** The model partition rarely changes:
+**Preferred: let `idf.py` do it**, from inside the container with the devkit's USB port passed
+through (`--device=/dev/ttyUSB0`, or in the DevContainer's `runArgs`):
 
 ```bash
+idf.py --preset korvo1 -p /dev/ttyUSB0 flash       # the whole set the build produced
+idf.py --preset korvo1 -p /dev/ttyUSB0 app-flash   # app partition only
+idf.py --preset korvo1 -p /dev/ttyUSB0 monitor     # console + panic decoding
+```
+
+`flash` writes bootloader, partition table, `ota_data`, the ESP-SR models and the app at the offsets
+in `build/<devkit>/flash_args`, and passes `--skip-flashed` so partitions already up to date are not
+rewritten. `app-flash` writes only `0x10000`.
+
+**The same thing with `esptool` alone** — for a machine that has `esptool` but no IDF (a flash
+runner, a CI box). These are the offsets `idf.py build` prints; the flags come from the same
+`flash_args`:
+
+```bash
+# app only — the routine update
 esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
   0x10000 build/korvo1/tinyml-demo-esp32s31.bin
-```
 
-**Full flash** — a new board, a partition change, an IDF/toolchain change, or any change to
-`CONFIG_SR_*`. The offsets are exactly what `idf.py build` writes into `build/<devkit>/flash_args`:
-
-```bash
+# full set — new board, partition change, IDF/toolchain change, or any CONFIG_SR_* change
 esptool --chip esp32s31 -p /dev/ttyUSB0 -b 921600 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
@@ -152,7 +164,8 @@ must come from the same build.
 python3 -m serial.tools.miniterm /dev/ttyUSB0 115200 | tee tinyml-demo_$(date +%Y%m%d_%H%M%S).log
 ```
 
-Ctrl-] exits miniterm. The application logs:
+Ctrl-] exits miniterm. Inside the container, `idf.py --preset <devkit> -p /dev/ttyUSB0 monitor` does
+the same job and additionally hands the ELF to the panic decoder. The application logs:
 
 - a banner with the devkit name, chip, SDK version, free SRAM and free PSRAM
 - one memory summary line per bring-up stage (`I2C`, `AUDIO`, `DISPLAY+LVGL`, `CAMERA`, `DETECTOR`, `VOICE`)
@@ -161,3 +174,37 @@ Ctrl-] exits miniterm. The application logs:
 
 The ESP-Mosaico's camera module claims the USB Serial/JTAG pads, so its console is UART-only and
 has to be read through a UART bridge rather than a USB port.
+
+## Regenerating the architecture diagrams
+
+The two diagrams in `docs/architecture/` are generated, and their JSON is the source of truth. The
+generator is the `archify` skill installed in the Hermes profile, not a dependency of this
+repository. Requirements: Node.js ≥ 18, and a Chrome/Chromium on `PATH` (the `browser-check` gate
+drives a real browser).
+
+```bash
+A=~/.hermes/profiles/esp32-developer/skills/archify
+
+node $A/bin/archify.mjs finalize architecture docs/architecture/architecture.json \
+  docs/architecture/architecture.html --repo-root . --quality showcase
+node $A/bin/archify.mjs finalize sequence docs/architecture/runtime.json \
+  docs/architecture/runtime.html --repo-root . --quality showcase
+
+python3 tools/render_architecture_png.py docs/architecture/architecture.html docs/architecture/architecture.png
+python3 tools/render_architecture_png.py docs/architecture/runtime.html      docs/architecture/runtime.png
+```
+
+`finalize` runs all four gates — `validate`, `deliver`, `check`, `browser-check` — and stops at the
+first failure; a non-zero exit is a failure, not a warning. Two operational notes:
+
+- **A second run on the same output needs `--out-dir`.** Once an artifact has a browser-check
+  receipt, that output path owns it: give the next run its own directory, e.g.
+  `--out-dir docs/architecture/review-2`. Receipts are gitignored.
+- **Chrome needs `--no-sandbox` where unprivileged user namespaces are blocked** (Ubuntu 23.10+ /
+  AppArmor). archify passes no sandbox flag, so put a wrapper named `chromium` on `PATH` that execs
+  the real binary with `--no-sandbox --disable-dev-shm-usage "$@"`.
+
+When the diagram's content is re-read after a code change, move `meta.repository.revision` in each
+JSON to the commit the sources were read at — archify verifies every cited path and line range
+against that revision and fails if a range runs past the end of the file.
+
