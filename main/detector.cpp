@@ -53,6 +53,8 @@ TaskHandle_t Detector::task_ = nullptr;
 
 Detector::Detector()
     : detect_(nullptr)
+    , frame_buf_(nullptr)
+    , frame_buf_size_(0)
 {
     detect_ = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, false);
     if (detect_ == nullptr) {
@@ -73,6 +75,11 @@ Detector::Detector()
 
 Detector::~Detector()
 {
+    if (frame_buf_ != nullptr) {
+        heap_caps_free(frame_buf_);
+        frame_buf_ = nullptr;
+        frame_buf_size_ = 0;
+    }
     delete detect_;
 }
 
@@ -165,37 +172,39 @@ bool Detector::detect_async(const uint8_t *pixels,
                  (unsigned long)(sizeof(task_stack_)));
     }
 
-    /* Copy the frame so the task owns it (the camera's buffer is reused by the
-     * next capture). Size follows from the geometry — no fixed frame size. */
+    /* Copy the frame into this object's own buffer — the camera's buffer is
+     * reused by the next capture. One buffer, allocated on first use and grown on
+     * demand, so a capture allocates nothing (issue #59). Size follows from the
+     * geometry; no fixed frame size. */
     const size_t fsz = rgb888_bytes(width, height);
-    auto *fdup = static_cast<uint8_t *>(
-        heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
-    if (fdup == nullptr) {
-        ESP_LOGE(TAG, "OOM for frame copy (%u bytes)", (unsigned)fsz);
-        infer_busy_.store(false);
-        return false;
+    if (frame_buf_ == nullptr || frame_buf_size_ < fsz) {
+        if (frame_buf_ != nullptr) {
+            heap_caps_free(frame_buf_);
+            frame_buf_ = nullptr;
+            frame_buf_size_ = 0;
+        }
+        frame_buf_ = static_cast<uint8_t *>(heap_caps_malloc(fsz, MALLOC_CAP_SPIRAM));
+        if (frame_buf_ == nullptr) {
+            ESP_LOGE(TAG, "OOM for frame copy (%u bytes)", (unsigned)fsz);
+            infer_busy_.store(false);
+            return false;
+        }
+        frame_buf_size_ = fsz;
     }
-    memcpy(fdup, pixels, fsz);
+    memcpy(frame_buf_, pixels, fsz);
 
-    auto *arg = new (std::nothrow) infer_arg_t{
-        .data   = fdup,
-        .width  = width,
-        .height = height,
-        .order  = order,
-        .self   = this,
-        .cb     = std::move(cb),
-    };
-    if (arg == nullptr) {
-        ESP_LOGE(TAG, "OOM for infer_arg_t");
-        heap_caps_free(fdup);
-        infer_busy_.store(false);
-        return false;
-    }
+    /* The hand-off is a member too: the task reads it, and nothing allocates. */
+    arg_.data   = frame_buf_;
+    arg_.width  = width;
+    arg_.height = height;
+    arg_.order  = order;
+    arg_.self   = this;
+    arg_.cb     = std::move(cb);
 
     /* Hand it over. A notification is held in the task's TCB until the task
      * waits on it, so a frame handed over between the claim being released and
      * the wait is not lost. */
-    xTaskNotify(task_, (uint32_t)(uintptr_t)arg, eSetValueWithOverwrite);
+    xTaskNotify(task_, (uint32_t)(uintptr_t)&arg_, eSetValueWithOverwrite);
     return true;
 }
 
@@ -245,11 +254,13 @@ void Detector::task_entry(void * /*arg*/)
         }
 
         if (ia->cb) {
-            ia->cb(buf, results);
+            ia->cb(buf, std::move(results));
         }
 
-        heap_caps_free(ia->data);
-        delete ia;
+        /* The hand-off and the frame buffer belong to the Detector, not to this
+         * task: nothing is freed here (issue #59). Clearing the callback drops
+         * the closure the caller handed over. */
+        ia->cb = nullptr;
 
         /* The frame is consumed: release the claim before waiting for the next
          * one, so the next detect_async() is admitted. */

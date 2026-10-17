@@ -51,10 +51,12 @@ public:
      */
     static constexpr size_t DETECT_TASK_STACK_UNITS = 8 * 1024;   /* 8 KB here */
 
-    /** Callback receives result string + full detection results. */
+    /** Callback receives the result string + the detections. The list is passed
+     *  by value so the task can move it out and nothing has to allocate to hand
+     *  it over (issue #59). */
     using result_cb_t = std::function<void(
         const char *text,
-        const std::list<dl::detect::result_t> &results)>;
+        std::list<dl::detect::result_t> results)>;
 
     /**
      * @brief Run detection on a converted frame (synchronous).
@@ -109,6 +111,17 @@ private:
         Detector          *self;
         result_cb_t        cb;
     };
+
+    /** The frame the inference task reads: one PSRAM buffer for the life of the
+     *  object, allocated on first use and grown on demand, so a capture allocates
+     *  nothing (issue #59). Reuse is safe because infer_busy_ admits one frame at
+     *  a time — the same invariant that lets one model be used from one task. */
+    uint8_t *frame_buf_;
+    size_t   frame_buf_size_;
+
+    /** The hand-off itself, also a member: the inference task reads it and does
+     *  NOT own it — it must never free it. */
+    infer_arg_t arg_;
 
     /* The inference task and the PSRAM stack it runs on. Created once, on the
      * first detect_async(), and never deleted: xTaskCreateStatic neither checks

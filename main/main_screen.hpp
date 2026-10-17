@@ -166,7 +166,7 @@ public:
      * @param results detections, in detector coordinates
      */
     void show_result(uint32_t generation,
-                     const std::list<dl::detect::result_t> &results);
+                     std::list<dl::detect::result_t> results);
 
     /** Install the callback fired when a shown result is dismissed.
      *
@@ -238,6 +238,13 @@ private:
      *  show_result() displays only the token its own cycle staged. */
     uint32_t stage_token_;
 
+    /** The result handed to the LVGL task, held here rather than in a per-result
+     *  allocation (issue #59): one is in flight at a time, because the next
+     *  inference cannot start until the previous callback returned (issue #51).
+     *  Written under the LVGL lock, read by the LVGL task. */
+    uint32_t                        pending_generation_;
+    std::list<dl::detect::result_t> pending_results_;
+
     /* ---- helpers ------------------------------------------------------ */
     /** Recompute the layout for this frame geometry and reposition the widgets. */
     void apply_layout(int32_t frame_w, int32_t frame_h);
@@ -254,9 +261,9 @@ private:
     /** Delete every bounding box. LVGL task. */
     void clear_boxes();
 
-    /** Build the result on screen from the frame staged as @p generation. LVGL task. */
-    void show_result_now(uint32_t generation,
-                         const std::list<dl::detect::result_t> &results);
+    /** Build the result on screen from the pending result and the frame staged
+     *  for it. LVGL task. */
+    void show_result_now();
 
     /** Take the result off screen and put the white placeholder back: rows, boxes,
      *  the image, its directive line and the tap handler. Does NOT call the

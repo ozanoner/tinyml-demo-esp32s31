@@ -33,7 +33,7 @@ if(NOT DEFINED ENV{DEVKIT} OR "$ENV{DEVKIT}" STREQUAL "")
 endif()
 set(DEVKIT_COMPONENT "$ENV{DEVKIT}")
 
-idf_component_register(SRCS "app_main.cpp" "splash.cpp" "main_screen.cpp" "ui_layout.cpp" "voice_pipeline.cpp" "detector.cpp"
+idf_component_register(SRCS "app_main.cpp" "app.cpp" "splash.cpp" "main_screen.cpp" "ui_layout.cpp" "voice_pipeline.cpp" "detector.cpp"
                     INCLUDE_DIRS "."
                     REQUIRES devkit_api ${DEVKIT_COMPONENT})
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

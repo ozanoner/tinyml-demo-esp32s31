@@ -256,7 +256,18 @@ VoicePipeline::~VoicePipeline()
         timeout_timer_ = nullptr;
     }
 
-    /* MultiNet destroyed inside detect task cleanup — handled there */
+    /* The tasks are gone, so the handles they were using can be released here.
+     * The detect task clears mn_data_ as it exits on its own path, so this cannot
+     * destroy the same model twice. */
+    if (mn_data_ != nullptr && multinet_ != nullptr) {
+        multinet_->destroy(mn_data_);
+        mn_data_ = nullptr;
+    }
+
+    if (models_ != nullptr) {
+        esp_srmodel_deinit(models_);
+        models_ = nullptr;
+    }
 
     if (afe_data_ != nullptr && afe_handle_ != nullptr) {
         afe_handle_->destroy(afe_data_);
@@ -615,6 +626,9 @@ void VoicePipeline::detect_task_fn(void *arg)
         multinet->destroy(model_data);
         model_data = nullptr;
     }
+    /* Ownership leaves the member before this task ends, so the destructor never
+     * destroys a model that this path already released (issue #59). */
+    self->mn_data_ = nullptr;
     if (buff) {
         heap_caps_free(buff);
     }
