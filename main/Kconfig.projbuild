@@ -21,3 +21,26 @@ menu "Devkit selection"
     endchoice
 
 endmenu
+
+menu "Diagnostics"
+
+    # Audio-path instrumentation is compiled out of release builds: it walks
+    # every sample of every frame in both audio tasks and writes one summary
+    # line per second per task, which costs CPU in the audio path and dominates
+    # the console log. Added for issue #46, gated in issue #53.
+    config AUDIO_METRICS
+        bool "Audio-path metering (#46 diagnostics)"
+        default n
+        help
+            Per-frame level metering at the codec and at the AFE output, the
+            1 Hz audio summary lines, and the per-detection MultiNet candidate
+            list.
+
+            Measurement only - it changes nothing that is fed, detected or
+            dispatched - but it walks every sample of every frame in both audio
+            tasks and prints one summary line per second per task.
+
+            Off in release builds. Turn it on for audio-path diagnosis:
+            idf.py --preset <name> menuconfig  (Diagnostics -> Audio-path metering)
+
+endmenu
