@@ -20,6 +20,7 @@
 #include "app.hpp"
 
 extern "C" {
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
@@ -36,6 +37,7 @@ extern "C" {
 #include "devkit.hpp"
 #include "detector.hpp"
 #include "main_screen.hpp"
+#include "mem_sampler.hpp"
 #include "policy.hpp"
 #include "ui_theme.hpp"
 #include "voice_pipeline.hpp"
@@ -104,12 +106,26 @@ void App::print_memory_summary(const char *label) const
      * MALLOC_CAP_DEFAULT, i.e. PSRAM-inclusive, so it says nothing about it. */
     size_t largest_sram = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
+#if CONFIG_MEM_LOW_WATER
+    /* The stage's peak, not its endpoint: the detector's dip happens *during*
+     * construction, so the free figure at the end of a stage cannot show it
+     * (issue #67). */
+    ESP_LOGI(TAG, "[MEM %s] SRAM:%lu  PSRAM:%lu  largest:%lu  largestSRAM:%lu  "
+                  "lowSRAM:%lu",
+             label,
+             (unsigned long)free_sram,
+             (unsigned long)free_psram,
+             (unsigned long)largest,
+             (unsigned long)largest_sram,
+             (unsigned long)mem::fetch_and_reset());
+#else
     ESP_LOGI(TAG, "[MEM %s] SRAM:%lu  PSRAM:%lu  largest:%lu  largestSRAM:%lu",
              label,
              (unsigned long)free_sram,
              (unsigned long)free_psram,
              (unsigned long)largest,
              (unsigned long)largest_sram);
+#endif
 
     /* Compared against the allocator's own region totals rather than a nameplate
      * capacity, so numerator and denominator describe the same pool: the warning
@@ -137,6 +153,10 @@ void App::print_memory_summary(const char *label) const
 
 void App::start()
 {
+    /* First, so the sampler covers the whole of bring-up (no-op in release
+     * builds). */
+    mem::start();
+
     if (!create_devkit_interfaces()) {
         return;
     }
@@ -160,6 +180,29 @@ void App::start()
         ESP_LOGE(TAG, "Camera init failed — frames will not be captured");
     }
     print_memory_summary("CAMERA");
+
+    /* ---- Object detector (COCO YOLO11n via ESP-DL) ----------------------
+     * Constructed BEFORE the splash, and therefore before any screen exists.
+     *
+     * Loading the model takes ~105 KB of internal RAM that it keeps, and a
+     * further ~109 KB it holds only while the memory manager plans the arena:
+     * measured on the Mosaico, internal free fell from 214,159 B to 19 B inside
+     * `new COCODetect` (issue #67). Nothing in our tree causes that peak — it is
+     * inside esp-dl's model load — but our ordering decides whether a repaint
+     * can land in it.
+     *
+     * A flush that runs while those 19 bytes are free loses its internal DMA
+     * bounce buffer and is dropped silently: the panel keeps its old contents.
+     * With the detector built after the splash (as it was), build_main_screen()
+     * has already queued a repaint of the new screen when the model loads, so the
+     * one repaint the user needs is exactly the one at risk. Building the
+     * detector first means no screen is queued yet and the window cannot swallow
+     * anything. */
+    detector_.reset(new (std::nothrow) Detector());
+    if (detector_ != nullptr && !detector_->is_ok()) {
+        ESP_LOGE(TAG, "Detector init failed — inference disabled");
+    }
+    print_memory_summary("DETECTOR");
 
     /* ---- Splash screen ----
      * The main screen is built from this splash's dismissal, which fires on the
@@ -200,13 +243,6 @@ void App::start()
     }
 
     ESP_LOGI(TAG, "Initialisation complete. State: \"%s\"", ui::text::kStateWakeWord);
-
-    /* ---- Object detector (COCO YOLO11n via ESP-DL) ---- */
-    detector_.reset(new (std::nothrow) Detector());
-    if (detector_ != nullptr && !detector_->is_ok()) {
-        ESP_LOGE(TAG, "Detector init failed — inference disabled");
-    }
-    print_memory_summary("DETECTOR");
 
     /* ---- Voice pipeline (WakeNet + AFE) ----
      * Last, because it starts the tasks that drive everything above through the
