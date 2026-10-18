@@ -84,13 +84,13 @@
       "sublabel": "LVGL task · countdown",
       "sources": [
         {
-          "path": "main/main_screen.cpp",
-          "line": 184
+          "path": "main/countdown.cpp",
+          "line": 50
         },
         {
-          "path": "main/main_screen.cpp",
-          "line": 888,
-          "end_line": 900
+          "path": "main/countdown.cpp",
+          "line": 147,
+          "end_line": 159
         }
       ]
     },
