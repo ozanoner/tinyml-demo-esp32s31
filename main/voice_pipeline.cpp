@@ -102,11 +102,9 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
       task_flag_(0),
       feed_stack_(nullptr),
       detect_stack_(nullptr),
-      command_mode_(false),
-      timeout_timer_(nullptr),
-      on_wakeword_(std::move(on_wakeword)),
-      on_command_(std::move(on_command)),
-      on_timeout_(std::move(on_timeout))
+      command_(std::move(on_wakeword),
+               std::move(on_command),
+               std::move(on_timeout))
 {
     ESP_LOGI(TAG, "Voice pipeline starting...");
 
@@ -239,14 +237,11 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     /* MultiNet is created inside the detect task (matching skainet pattern).
      * This ensures it runs in the same thread context where detect() is called. */
 
-    /* ---- 4. Create timeout timer (15 s, one-shot) -------------------- */
-    timeout_timer_ = xTimerCreate("voice_timeout",
-                                  pdMS_TO_TICKS(policy::kPolicy.command_window_ms),
-                                  pdFALSE,
-                                  this,
-                                  timeout_timer_fn);
-    if (timeout_timer_ == nullptr) {
-        ESP_LOGE(TAG, "xTimerCreate failed");
+    /* ---- 4. The 15 s window timer ------------------------------------
+     * Created by command_, which owns it and the transitions it drives. Checked
+     * here, where the AFE is up, so a failure unwinds the way this constructor
+     * has always unwound it. */
+    if (!command_.is_ok()) {
         afe_handle_->destroy(afe_data_);
         audio_->close_mic();
         return;
@@ -265,7 +260,7 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     if (feed_task_ == nullptr) {
         ESP_LOGE(TAG, "feed task creation failed");
         task_flag_ = 0;
-        xTimerDelete(timeout_timer_, 0);
+        command_.stop();
         afe_handle_->destroy(afe_data_);
         audio_->close_mic();
         return;
@@ -280,7 +275,7 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
         task_flag_ = 0;
         vTaskDelete(feed_task_);
         feed_task_ = nullptr;
-        xTimerDelete(timeout_timer_, 0);
+        command_.stop();
         afe_handle_->destroy(afe_data_);
         audio_->close_mic();
         return;
@@ -315,10 +310,9 @@ VoicePipeline::~VoicePipeline()
     feed_stack_ = nullptr;
     detect_stack_ = nullptr;
 
-    if (timeout_timer_ != nullptr) {
-        xTimerDelete(timeout_timer_, 0);
-        timeout_timer_ = nullptr;
-    }
+    /* The window cannot fire once the pipeline is going away — the state machine
+     * stops it here, and deletes the handle with itself. */
+    command_.stop();
 
     /* The tasks are gone, so the handles they were using can be released here.
      * The detect task clears mn_data_ as it exits on its own path, so this cannot
@@ -340,38 +334,6 @@ VoicePipeline::~VoicePipeline()
 
     if (audio_ != nullptr) {
         audio_->close_mic();
-    }
-}
-
-// ---------------------------------------------------------------------------
-//  Public helpers
-// ---------------------------------------------------------------------------
-
-void VoicePipeline::start_command_timeout()
-{
-    if (timeout_timer_ != nullptr) {
-        xTimerStop(timeout_timer_, 0);
-        xTimerReset(timeout_timer_, 0);
-        ESP_LOGI(TAG, "Command timeout started (15 s)");
-    }
-}
-
-void VoicePipeline::cancel_command_timeout()
-{
-    if (timeout_timer_ != nullptr) {
-        xTimerStop(timeout_timer_, 0);
-        ESP_LOGI(TAG, "Command timeout cancelled");
-    }
-}
-
-void VoicePipeline::enter_command_mode_on_wake()
-{
-    command_mode_ = true;
-    start_command_timeout();
-    ESP_LOGI(TAG, "Command mode: multiword listening (15s)");
-
-    if (on_wakeword_) {
-        on_wakeword_("");
     }
 }
 
@@ -599,7 +561,7 @@ void VoicePipeline::detect_task_fn(void *arg)
                      "audio[0]:%d  peak=%d mean=%d clip=%lld  ch=%d  "
                      "cache=%d bytes",
                      (double)res->data_volume, res->vad_state,
-                     self->command_mode_ ? "CMD" : "WAKE",
+                     self->command_.listening() ? "CMD" : "WAKE",
                      (double)(res->ringbuff_free_pct * 100.0f),
                      res->data ? (int)res->data[0] : -1,
                      out_stats.peak, out_stats.mean(),
@@ -626,64 +588,53 @@ void VoicePipeline::detect_task_fn(void *arg)
             ESP_LOGI(TAG, ">>> Wake word detected <<<");
             /* Clean MultiNet state on wake word — skainet pattern */
             multinet->clean(model_data);
-            self->enter_command_mode_on_wake();
+            self->command_.on_wakeword();
         }
 
         /* ---- Command mode: feed AFE output to MultiNet --------------- */
-        if (self->command_mode_) {
-            esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
+        if (self->command_.listening()) {
+            const esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
 
-            if (mn_state == ESP_MN_STATE_DETECTING) {
+            if (mn_state != ESP_MN_STATE_DETECTED) {
+                /* DETECTING: still listening. TIMEOUT: the model's own VAD gave
+                 * up before the window did. Neither carries a command, so there
+                 * is nothing to decode and only the state machine is told. */
+                self->command_.on_multinet_state(mn_state, nullptr);
                 continue;
             }
 
-            if (mn_state == ESP_MN_STATE_TIMEOUT) {
-                ESP_LOGI(TAG, "Command VAD timeout");
-                self->command_mode_ = false;
-                self->cancel_command_timeout();
-
-                if (self->on_timeout_) {
-                    self->on_timeout_("");
-                }
-                continue;
+            esp_mn_results_t *mn_result = multinet->get_results(model_data);
+            if (mn_result == nullptr || mn_result->num == 0) {
+                continue;                       /* nothing to report */
             }
 
-            if (mn_state == ESP_MN_STATE_DETECTED) {
-                esp_mn_results_t *mn_result = multinet->get_results(
-                    model_data);
-                if (mn_result != nullptr && mn_result->num > 0) {
 #if CONFIG_AUDIO_METRICS
-                    /* Diagnostic: every candidate the model reported, with its
-                     * score, ahead of the threshold gate below. */
-                    for (int i = 0; i < mn_result->num && i < kMaxCandidates; i++) {
-                        ESP_LOGI(TAG, "mn: TOP%d  id=%d  prob=%.3f",
-                                 i + 1, mn_result->command_id[i],
-                                 (double)mn_result->prob[i]);
-                    }
+            /* Diagnostic: every candidate the model reported, with its
+             * score, ahead of the threshold gate below. */
+            for (int i = 0; i < mn_result->num && i < kMaxCandidates; i++) {
+                ESP_LOGI(TAG, "mn: TOP%d  id=%d  prob=%.3f",
+                         i + 1, mn_result->command_id[i],
+                         (double)mn_result->prob[i]);
+            }
 #endif
 
-                    /* No threshold gate here: the model's own det_threshold
-                     * (policy::kPolicy.multinet_det_threshold) is the single
-                     * gate, and everything it reports has already passed it
-                     * (issue #61, A11). */
-                    const float prob = mn_result->prob[0];
-                    int cmd_id = mn_result->command_id[0];
-                    /* Use registered English text; fall back to raw string */
-                    const char *display =
-                        (cmd_id >= 0 && cmd_id < cmd_count)
-                            ? cmds[cmd_id]
-                            : mn_result->string;
-                    ESP_LOGI(TAG, ">>> Command detected: '%s' "
-                             "(id=%d prob=%.3f) <<<",
-                             display, cmd_id, (double)prob);
+            /* No threshold gate here: the model's own det_threshold
+             * (policy::kPolicy.multinet_det_threshold) is the single
+             * gate, and everything it reports has already passed it
+             * (issue #61, A11). */
+            const float prob = mn_result->prob[0];
+            int cmd_id = mn_result->command_id[0];
+            /* Use registered English text; fall back to raw string */
+            const char *display =
+                (cmd_id >= 0 && cmd_id < cmd_count)
+                    ? cmds[cmd_id]
+                    : mn_result->string;
+            ESP_LOGI(TAG, ">>> Command detected: '%s' "
+                     "(id=%d prob=%.3f) <<<",
+                     display, cmd_id, (double)prob);
 
-                    if (self->on_command_) {
-                        self->on_command_(display);
-                    }
-                }
-                /* Continue listening for more commands within 15s window */
-                continue;
-            }
+            self->command_.on_multinet_state(mn_state, display);
+            /* Continue listening for more commands within 15s window */
         }
     }
 
@@ -699,20 +650,4 @@ void VoicePipeline::detect_task_fn(void *arg)
     }
     ESP_LOGI(TAG, "Detect task exiting");
     vTaskDelete(nullptr);
-}
-
-// ---------------------------------------------------------------------------
-//  FreeRTOS — timeout timer callback
-// ---------------------------------------------------------------------------
-
-void VoicePipeline::timeout_timer_fn(TimerHandle_t timer)
-{
-    auto *self = static_cast<VoicePipeline *>(pvTimerGetTimerID(timer));
-    ESP_LOGI(TAG, ">>> 15-second command window expired <<<");
-
-    self->command_mode_ = false;
-
-    if (self->on_timeout_) {
-        self->on_timeout_("");
-    }
 }
