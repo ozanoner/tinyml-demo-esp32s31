@@ -8,6 +8,7 @@
  */
 
 #include "splash.hpp"
+#include "ui_theme.hpp"
 #include "esp_log.h"
 #include "esp_app_desc.h"
 
@@ -26,20 +27,20 @@ Splash::Splash(const char  *title,
       timer_(nullptr), cb_(cb), cb_arg_(cb_arg)
 {
     /* Dark background */
-    lv_obj_set_style_bg_color(scr_, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_style_bg_color(scr_, lv_color_hex(ui::color::kBackground), 0);
 
     /* Centred title */
     label_ = lv_label_create(scr_);
     lv_label_set_text(label_, title);
-    lv_obj_set_style_text_color(label_, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(label_, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(label_, lv_color_hex(ui::color::kText), 0);
+    lv_obj_set_style_text_font(label_, ui::font::status(), 0);
     lv_obj_align(label_, LV_ALIGN_CENTER, 0, -20);
 
     /* Footer hint */
     hint_ = lv_label_create(scr_);
     lv_label_set_text(hint_, hint);
-    lv_obj_set_style_text_color(hint_, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(hint_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(hint_, lv_color_hex(ui::color::kSplashFooter), 0);
+    lv_obj_set_style_text_font(hint_, ui::font::list(), 0);
     lv_obj_align(hint_, LV_ALIGN_BOTTOM_MID, 0, -20);
 
     /* Version line, just above the hint.  Taken from this image's own
@@ -51,8 +52,8 @@ Splash::Splash(const char  *title,
 
     version_ = lv_label_create(scr_);
     lv_label_set_text(version_, version);
-    lv_obj_set_style_text_color(version_, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(version_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(version_, lv_color_hex(ui::color::kSplashFooter), 0);
+    lv_obj_set_style_text_font(version_, ui::font::list(), 0);
     lv_obj_align(version_, LV_ALIGN_BOTTOM_MID, 0, -44);
 
     /* Auto-dismiss timer */
