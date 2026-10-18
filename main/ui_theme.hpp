@@ -5,7 +5,7 @@
  *
  * Nothing here is device-specific. Panel geometry is a hardware fact the devkit
  * reports (devkit::Display::width()/height()); the frame geometry is a hardware
- * fact the camera reports (devkit::Camera::output_geometry()); where each widget
+ * fact the camera reports (devkit::Camera::geometry()); where each widget
  * goes is derived from those two in ui_layout.hpp. So a colour, a size or a
  * screen text changes in exactly one place, and no devkit carries UI numbers.
  *

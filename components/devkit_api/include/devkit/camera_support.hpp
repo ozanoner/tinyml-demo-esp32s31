@@ -61,21 +61,30 @@ inline esp_err_t validate_frame(const Frame &src, FrameFormat expected,
 }
 
 /**
- * @brief Describe a converted image.
+ * @brief Describe a detector image.
  *
- * The six fields every conversion writes. @p order defaults to RGB, which is
- * what an untouched Image already carries (camera.hpp:83).
+ * The fields every model conversion writes, in one place. @p stride is the row
+ * length the caller computed; @p order is what its hardware produced.
  */
-inline void fill_image(Image &out, const uint8_t *data,
-                       uint32_t width, uint32_t height, uint32_t stride,
-                       uint32_t bytes, PixelOrder order = PixelOrder::RGB)
+inline void fill_model_image(ModelImage &out, const uint8_t *data,
+                             Geometry geometry, uint32_t stride, uint32_t bytes,
+                             PixelOrder order)
 {
-    out.data   = data;
-    out.width  = width;
-    out.height = height;
-    out.stride = stride;
-    out.bytes  = bytes;
-    out.order  = order;
+    out.data     = data;
+    out.geometry = geometry;
+    out.stride   = stride;
+    out.bytes    = bytes;
+    out.order    = order;
+}
+
+/** @brief Describe a display image. No component order: RGB565 has none. */
+inline void fill_display_image(DisplayImage &out, const uint8_t *data,
+                               Geometry geometry, uint32_t stride, uint32_t bytes)
+{
+    out.data     = data;
+    out.geometry = geometry;
+    out.stride   = stride;
+    out.bytes    = bytes;
 }
 
 /**

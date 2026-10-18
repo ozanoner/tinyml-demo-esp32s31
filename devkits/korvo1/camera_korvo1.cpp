@@ -161,7 +161,7 @@ public:
      * geometry, selected by this devkit's sdkconfig.defaults (the OV3660 DVP
      * mode configured there), and the detector resizes for its model itself.
      */
-    Geometry output_geometry() const override { return Geometry{FRAME_W, FRAME_H}; }
+    Geometry geometry() const override { return Geometry{FRAME_W, FRAME_H}; }
 
     esp_err_t capture(Frame &out) override
     {
@@ -399,12 +399,11 @@ public:
                     memmove(fb_, src, bytes);
                 }
 
-                out.data   = fb_;
-                out.width  = w;
-                out.height = h;
-                out.stride = stride;
-                out.bytes  = img_size;
-                out.format = FrameFormat::RGB565_BE;
+                out.data     = fb_;
+                out.geometry = Geometry{w, h};
+                out.stride   = stride;
+                out.bytes    = img_size;
+                out.format   = FrameFormat::RGB565_BE;
             }
         }
 
@@ -433,28 +432,22 @@ public:
      * is NOT insensitive to the rotation — this used to be left unflipped on
      * that assumption, which is why almost nothing was ever detected.
      */
-    esp_err_t to_model_input(const Frame &src, uint32_t want_w, uint32_t want_h,
-                             Image &out) override
+    esp_err_t to_model_input(const Frame &src, ModelImage &out) override
     {
         esp_err_t ret = camera::validate_frame(src, FrameFormat::RGB565_BE,
                                                "to_model_input");
         if (ret != ESP_OK) {
             return ret;
         }
-        if (want_w != src.width || want_h != src.height) {
-            ESP_LOGW(TAG, "to_model_input: no scaler, giving %lux%lu not %lux%lu",
-                     (unsigned long)src.width, (unsigned long)src.height,
-                     (unsigned long)want_w, (unsigned long)want_h);
-        }
 
-        const uint32_t needed = src.width * src.height * 3u;
+        const uint32_t needed = src.geometry.width * src.geometry.height * 3u;
         ret = rgb_.reserve(needed, "RGB888");
         if (ret != ESP_OK) {
             return ret;
         }
 
-        const uint32_t w            = src.width;
-        const uint32_t h            = src.height;
+        const uint32_t w            = src.geometry.width;
+        const uint32_t h            = src.geometry.height;
         const uint32_t src_stride   = (src.stride != 0) ? src.stride : w * 2u;
         uint8_t       *dst          = rgb_.data();
 
@@ -470,8 +463,8 @@ public:
         }
 
         /* R at the lowest address: the software loop above writes it first. */
-        camera::fill_image(out, dst, src.width, src.height, src.width * 3u, needed,
-                           PixelOrder::RGB);
+        camera::fill_model_image(out, dst, src.geometry, w * 3u, needed,
+                                 PixelOrder::RGB);
         return ESP_OK;
     }
 
@@ -481,22 +474,16 @@ public:
      * geometry contract as to_model_input(): no scaler here, so the frame's own
      * size comes back.
      */
-    esp_err_t to_display(const Frame &src, uint32_t want_w, uint32_t want_h,
-                         Image &out) override
+    esp_err_t to_display(const Frame &src, DisplayImage &out) override
     {
         esp_err_t ret = camera::validate_frame(src, FrameFormat::RGB565_BE,
                                                "to_display");
         if (ret != ESP_OK) {
             return ret;
         }
-        if (want_w != src.width || want_h != src.height) {
-            ESP_LOGW(TAG, "to_display: no scaler, showing %lux%lu not %lux%lu",
-                     (unsigned long)src.width, (unsigned long)src.height,
-                     (unsigned long)want_w, (unsigned long)want_h);
-        }
 
-        const uint32_t row_bytes    = src.width * FRAME_BPP;
-        const uint32_t needed_bytes = row_bytes * src.height;
+        const uint32_t row_bytes    = src.geometry.width * FRAME_BPP;
+        const uint32_t needed_bytes = row_bytes * src.geometry.height;
 
         ret = disp_.reserve(needed_bytes, "display");
         if (ret != ESP_OK) {
@@ -504,18 +491,18 @@ public:
         }
         uint8_t *dst = disp_.data();
 
-        for (uint32_t y = 0; y < src.height; y++) {
+        for (uint32_t y = 0; y < src.geometry.height; y++) {
             /* Row flip: bottom row first */
-            const uint8_t *sr = src.data + (src.height - 1 - y) * row_bytes;
+            const uint8_t *sr = src.data + (src.geometry.height - 1 - y) * row_bytes;
             uint8_t       *dr = dst + y * row_bytes;
-            for (uint32_t x = 0; x < src.width; x++) {
+            for (uint32_t x = 0; x < src.geometry.width; x++) {
                 /* Byte swap: RGB565 BE -> LE */
                 dr[x * 2]     = sr[x * 2 + 1];
                 dr[x * 2 + 1] = sr[x * 2];
             }
         }
 
-        camera::fill_image(out, dst, src.width, src.height, row_bytes, needed_bytes);
+        camera::fill_display_image(out, dst, src.geometry, row_bytes, needed_bytes);
         return ESP_OK;
     }
 

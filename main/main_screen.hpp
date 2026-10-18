@@ -75,7 +75,7 @@ public:
      * @param display   provides the LVGL lock (not owned; must outlive this)
      * @param panel_w   panel width, pixels  (devkit::Display::width())
      * @param panel_h   panel height, pixels (devkit::Display::height())
-     * @param frame_w   frame geometry the camera produces (devkit::Camera::output_geometry())
+     * @param frame_w   frame geometry the camera produces (devkit::Camera::geometry())
      * @param frame_h   frame geometry the camera produces
      */
     MainScreen(devkit::Display *display,
