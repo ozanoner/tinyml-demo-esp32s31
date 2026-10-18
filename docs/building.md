@@ -66,8 +66,9 @@ devkit's manifest is never read, so each devkit gets its own set. Forcing one ve
 would hold the ESP-Mosaico camera module — the Mosaico's whole camera path — below the range it
 declares.
 
-`dependencies.lock` is gitignored and rewritten by each devkit's build, so it always records the
-devkit that was built last.
+`dependencies.lock` is **not** a pin and is not committed. The component manager writes it during
+each build, so it records whichever devkit was solved last — the answer for one devkit, never a
+project-wide graph. Building the other devkit rewrites it. The pins are the manifests named above.
 
 ## The Korvo-1 DVP patch, and why `idf.py --version` says `-dirty`
 
@@ -313,8 +314,11 @@ regenerates the diagrams, and is not repeated in CI: it would cost a Node toolch
 download to relearn something already proven.
 
 Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
-(`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the component graph through the
-committed `dependencies.lock`.
+(`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the direct components through the
+manifests — `main/idf_component.yml` plus the selected devkit's. Transitive components are whatever
+those pinned components declare, and are not pinned themselves: a clean solve takes the newest
+version that satisfies them. That is the accepted trade — the components that decide behaviour here
+(the models, the detector, LVGL, both BSPs) are exact pins.
 
 `merged-<devkit>.bin` is the whole flash set in one image — write it at `0x0` and the board is
 complete, partitions and both models included (`esptool write-flash 0x0 merged-<devkit>.bin` with the
