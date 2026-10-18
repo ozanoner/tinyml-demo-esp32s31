@@ -1,19 +1,28 @@
 /**
  * @file camera.hpp
- * @brief Camera interface: capture, and conversion into the two forms the
- *        application consumes.
+ * @brief Camera interface: capture one frame, and convert it into the two forms
+ *        the application consumes.
  *
  * The application never sees a device node, a V4L2 structure, a pixel format
  * enum from a vendor driver, or a byte-swap/flip decision. It captures a frame,
  * and asks the devkit to turn that frame into (a) the image the object detector
  * consumes and (b) the image the LCD shows.
  *
- * Both converted images are produced at one shared geometry, requested by the
- * caller: the detector reports its boxes in the coordinates of the image it was
- * given, and the result screen draws them 1:1 over the displayed image, so the
- * two must agree. A devkit that can scale in hardware (the ESP-Mosaico's PPA)
- * produces exactly what was asked for; a devkit without a scaler produces the
- * captured geometry and the detector resizes it itself.
+ * One role, not three (issue #89). Capture and the two conversions are one
+ * interface because they share one piece of state — the frame — and its lifetime
+ * is what binds them: a converted image is only meaningful while the frame it
+ * came from is. Splitting them into separate roles would let a caller hold a
+ * converter and hand it a frame that has already been replaced, which the type
+ * system could not catch. There is also exactly one consumer (main/app.cpp), and
+ * it uses all five methods, so no caller wants capture without the conversions.
+ *
+ * One geometry, too. Both converted images are produced at Camera::geometry() —
+ * the one the screen is laid out around — because the detector reports its boxes
+ * in the coordinates of the image it was given and the result screen draws them
+ * 1:1 over the displayed image. Nothing asks for a different size, so nothing
+ * takes one: a devkit that can scale in hardware (the ESP-Mosaico's PPA) produces
+ * exactly that geometry, and a devkit without a scaler produces the frame's own,
+ * which each image reports.
  */
 
 #pragma once
@@ -53,46 +62,61 @@ enum class PixelOrder {
 };
 
 /**
- * One captured frame. The pixel data stays owned by the devkit and is valid until
- * the next capture(). The interface is not re-entrant: a devkit holds one capture
- * state, so capture() must not be called again while a Frame is still in use. The
- * application enforces this by doing every conversion it needs, and copying the
- * result out, inside the cycle that captured the frame.
- */
-struct Frame {
-    const uint8_t *data;  /**< pixel data; valid until the next capture() */
-    uint32_t width;       /**< pixels */
-    uint32_t height;      /**< pixels */
-    uint32_t stride;      /**< bytes per row */
-    uint32_t bytes;       /**< total bytes of pixel data */
-    FrameFormat format;   /**< how to interpret the pixel data */
-};
-
-/** A converted image, in a buffer owned by the devkit. */
-struct Image {
-    const uint8_t *data;  /**< pixel data; see the producing method for lifetime */
-    uint32_t width;       /**< pixels actually produced */
-    uint32_t height;      /**< pixels actually produced */
-    uint32_t stride;      /**< bytes per row */
-    uint32_t bytes;       /**< total bytes of pixel data */
-    /**
-     * Component order of the dark-to-light triplets.  Meaningful for the
-     * detector image (see PixelOrder); the display image is in the panel's own
-     * layout, which this does not describe.
-     */
-    PixelOrder order = PixelOrder::RGB;
-};
-
-/**
  * Pixel geometry of an image.
  *
- * Reported by the devkit rather than chosen by the application: the capture path
- * either has no scaler (and yields the sensor's own frame) or scales in hardware,
- * and only the devkit knows what its hardware can produce exactly.
+ * One type for all three: the frame that was captured, the two images converted
+ * from it, and Camera::geometry() — the size both conversions are produced at.
  */
 struct Geometry {
     uint32_t width;   /**< pixels */
     uint32_t height;  /**< pixels */
+};
+
+/**
+ * One captured frame, and the lifetime that governs everything converted from it.
+ *
+ * The pixel data stays owned by the devkit and is valid until the next capture().
+ * Anything converted from this frame is valid for the same span, so a caller
+ * converts what it needs — and copies what it must keep — inside the cycle that
+ * captured the frame. The interface is not re-entrant either: a devkit holds one
+ * capture state, so capture() must not be called again while either converted
+ * image is still in use.
+ */
+struct Frame {
+    const uint8_t *data;  /**< pixel data; valid until the next capture() */
+    Geometry       geometry;
+    uint32_t       stride;  /**< bytes per row */
+    uint32_t       bytes;   /**< total bytes of pixel data */
+    FrameFormat    format;  /**< how to interpret the pixel data */
+};
+
+/**
+ * A frame converted into the image the object detector consumes: three bytes per
+ * pixel, tightly packed. Row length is width * 3 with no padding, because esp-dl's
+ * img_t carries no stride.
+ *
+ * Lifetime: see Frame. `order` is meaningful here and only here — see PixelOrder.
+ */
+struct ModelImage {
+    const uint8_t *data;
+    Geometry       geometry;  /**< pixels actually produced */
+    uint32_t       stride;    /**< bytes per row; always geometry.width * 3 */
+    uint32_t       bytes;     /**< total bytes of pixel data */
+    PixelOrder     order;     /**< which component sits at the lowest address */
+};
+
+/**
+ * A frame converted into an image the LCD can show directly, in the panel's
+ * native format laid out for LVGL (LV_COLOR_FORMAT_NATIVE).
+ *
+ * No component order: a 16-bit RGB565 buffer has none to report.
+ * Lifetime: see Frame.
+ */
+struct DisplayImage {
+    const uint8_t *data;
+    Geometry       geometry;  /**< pixels actually produced */
+    uint32_t       stride;    /**< bytes per row */
+    uint32_t       bytes;     /**< total bytes of pixel data */
 };
 
 class Camera {
@@ -108,73 +132,55 @@ public:
     /**
      * @brief The geometry both conversions are produced at.
      *
-     * The detector reports its boxes in the coordinates of the image it is
-     * given, and the screen draws them 1:1 over the displayed image, so the two
-     * must be produced at one geometry — this one. The application passes it to
-     * to_model_input() and to_display(), and lays the screen out around it.
-     *
-     * A devkit without a scaler reports the geometry its sensor delivers; one
-     * that can scale reports the geometry it can produce exactly. Answerable
-     * even when the capture path failed to come up, so a screen can still be
-     * laid out.
+     * The application lays the screen out around this and checks nothing else: a
+     * converted image reports the geometry it actually came out at, which on both
+     * devkits this build ships is this value. Answerable even when the capture
+     * path failed to come up, so a screen can still be laid out.
      */
-    virtual Geometry output_geometry() const = 0;
+    virtual Geometry geometry() const = 0;
 
     /**
      * @brief Capture one still frame.
      *
      * Not re-entrant, and the returned Frame's pixels live only until the next
-     * call. Callers do every conversion the frame needs before capturing again.
+     * call — as do the images converted from it (see Frame). Callers do every
+     * conversion the frame needs before capturing again.
      *
      * @param[out] out  filled on success; the pixel data is owned by this object
-     *                  and stays valid until the next capture().
      */
     virtual esp_err_t capture(Frame &out) = 0;
 
     /**
      * @brief Convert a frame into the image the object detector consumes.
      *
-     * The image is three bytes per pixel, tightly packed — state width and
-     * height, and the row length is width * 3, with no padding, because esp-dl's
-     * img_t carries no stride.  A devkit that can scale produces exactly
-     * want_w x want_h; one that cannot produces the captured geometry, and
-     * `out.width`/`out.height` report which of the two happened, so the caller
-     * always knows the coordinate space of the results.  The component order is
-     * reported in `out.order`, since the hardware paths differ (see PixelOrder).
+     * A devkit that can scale produces Camera::geometry(); one that cannot
+     * produces the frame's own geometry, and `out.geometry` reports which of the
+     * two happened, so the caller always knows the coordinate space of the
+     * results. The component order is reported in `out.order`, since the hardware
+     * paths differ (see PixelOrder).
      *
-     * The buffer is owned by this object and stays valid until the next call to
-     * to_model_input() (or to_display()); copy it if it must outlive that.
-     * Consume one result before asking for the next conversion rather than relying
-     * on the two having separate buffers.
+     * The buffer is owned by this object. Consume one result before asking for
+     * the next conversion rather than relying on the two having separate buffers.
      *
-     * @param[in]  src      frame to convert
-     * @param[in]  want_w   requested width  (the result-screen image width)
-     * @param[in]  want_h   requested height (the result-screen image height)
-     * @param[out] out      converted image
+     * @param[in]  src  frame to convert
+     * @param[out] out  converted image; valid until the next capture()
      */
-    virtual esp_err_t to_model_input(const Frame &src, uint32_t want_w,
-                                     uint32_t want_h, Image &out) = 0;
+    virtual esp_err_t to_model_input(const Frame &src, ModelImage &out) = 0;
 
     /**
      * @brief Convert a frame into an image the LCD can show directly.
      *
      * Same geometry contract as to_model_input(): the result screen draws the
      * detector's boxes over this image unscaled, so it must be produced at the
-     * geometry the detector saw. The pixel format is the panel's native one,
-     * laid out for LVGL (LV_COLOR_FORMAT_NATIVE).
+     * geometry the detector saw.
      *
-     * The buffer is owned by this object and stays valid until the next call to
-     * to_display() (or to_model_input()); copy it if it must outlive that.
-     * Consume one result before asking for the next conversion rather than relying
-     * on the two having separate buffers.
+     * The buffer is owned by this object. Consume one result before asking for
+     * the next conversion rather than relying on the two having separate buffers.
      *
-     * @param[in]  src      frame to convert
-     * @param[in]  want_w   requested width
-     * @param[in]  want_h   requested height
-     * @param[out] out      converted image
+     * @param[in]  src  frame to convert
+     * @param[out] out  converted image; valid until the next capture()
      */
-    virtual esp_err_t to_display(const Frame &src, uint32_t want_w,
-                                 uint32_t want_h, Image &out) = 0;
+    virtual esp_err_t to_display(const Frame &src, DisplayImage &out) = 0;
 
 protected:
     Camera() = default;

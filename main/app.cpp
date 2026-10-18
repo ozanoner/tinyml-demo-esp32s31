@@ -280,7 +280,7 @@ void App::build_main_screen()
 {
     /* Hardware facts only: the panel's own geometry, and the geometry the camera
      * produces. Everything the screen places is derived from those two. */
-    const devkit::Geometry frame = (camera_ != nullptr) ? camera_->output_geometry()
+    const devkit::Geometry frame = (camera_ != nullptr) ? camera_->geometry()
                                                         : devkit::Geometry{0, 0};
 
     ui_.reset(new (std::nothrow) MainScreen(display_.get(),
@@ -400,18 +400,17 @@ void App::start_capture_cycle()
     }
 
     ESP_LOGI(TAG, "Frame: %lux%lu  stride=%lu  bytes=%lu",
-             (unsigned long)frame.width, (unsigned long)frame.height,
+             (unsigned long)frame.geometry.width,
+             (unsigned long)frame.geometry.height,
              (unsigned long)frame.stride, (unsigned long)frame.bytes);
 
-    /* One geometry for both converted images: the detector reports its boxes in
-     * the coordinates of the image it is given, and the screen draws them 1:1
-     * over the displayed image. The devkit owns both buffers and converts in
-     * hardware where it can. */
-    const devkit::Geometry want = camera_->output_geometry();
-
-    devkit::Image model_img{};
+    /* The camera has one geometry, which the screen was laid out around and which
+     * both conversions are produced at: the detector reports its boxes in the
+     * coordinates of the image it is given, and the screen draws them 1:1 over the
+     * displayed image. Each image still reports what it actually produced. */
+    devkit::ModelImage model_img{};
     const int64_t cvt_t0 = esp_timer_get_time();
-    ret = camera_->to_model_input(frame, want.width, want.height, model_img);
+    ret = camera_->to_model_input(frame, model_img);
     const int64_t cvt_t1 = esp_timer_get_time();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "to_model_input failed: %s", esp_err_to_name(ret));
@@ -423,8 +422,8 @@ void App::start_capture_cycle()
     }
     ESP_LOGI(TAG, "CVT:%lu ms  %lux%lu",
              (unsigned long)((cvt_t1 - cvt_t0) / 1000),
-             (unsigned long)model_img.width,
-             (unsigned long)model_img.height);
+             (unsigned long)model_img.geometry.width,
+             (unsigned long)model_img.geometry.height);
 
     if (ui_ != nullptr) ui_->set_status(ui::text::kStateAnalysing);
 
@@ -433,11 +432,12 @@ void App::start_capture_cycle()
      * detections: the token below is what pairs a result with its frame. */
     uint32_t generation = 0;
     if (ui_ != nullptr) {
-        devkit::Image disp_img{};
-        if (camera_->to_display(frame, want.width, want.height, disp_img) != ESP_OK) {
+        devkit::DisplayImage disp_img{};
+        if (camera_->to_display(frame, disp_img) != ESP_OK) {
             ESP_LOGE(TAG, "to_display failed — no frame for the result screen");
         } else {
-            generation = ui_->stage_frame(disp_img.data, disp_img.width, disp_img.height,
+            generation = ui_->stage_frame(disp_img.data, disp_img.geometry.width,
+                                          disp_img.geometry.height,
                                           disp_img.stride, disp_img.bytes);
             if (generation == 0) {
                 ESP_LOGE(TAG, "frame not staged — no frame for the result screen");
@@ -447,7 +447,7 @@ void App::start_capture_cycle()
 
     if (detector_ != nullptr) {
         const bool started = detector_->detect_async(
-            model_img.data, model_img.width, model_img.height,
+            model_img.data, model_img.geometry.width, model_img.geometry.height,
             model_img.order,
             [this, generation](const char * /*text*/,
                                std::list<dl::detect::result_t> results) {

@@ -23,10 +23,10 @@
  * the captured frame, which on this board's 1280x720 mode is the difference
  * between 2.7 MB and 173 KB per conversion.
  *
- * Geometry is chosen by the caller (to_model_input/to_display take the wanted
- * size): the detector's boxes are drawn 1:1 over the displayed image, so the two
- * must be produced at one geometry. Only ratios that are a whole number of the
- * driver's 1/16 scale steps come out the requested size; see PPA_SCALE_STEPS.
+ * Geometry is this devkit's own (geometry()): the detector's boxes are drawn 1:1
+ * over the displayed image, so the two must be produced at one size. The sensor's
+ * mode and OUT_W/OUT_H are chosen so their ratio is a whole number of the driver's
+ * 1/16 scale steps; see PPA_SCALE_STEPS.
  *
  * Thread safety: capture() is not re-entrant. The module serialises its own
  * pipeline, but two contexts starting and stopping the stream at once would not
@@ -176,7 +176,7 @@ public:
 
     /** What this devkit's PPA produces for both consumers, whatever the state of
      *  the capture path — the screen is laid out from it before a frame exists. */
-    Geometry output_geometry() const override { return Geometry{OUT_W, OUT_H}; }
+    Geometry geometry() const override { return Geometry{OUT_W, OUT_H}; }
 
     esp_err_t capture(Frame &out) override
     {
@@ -234,11 +234,17 @@ public:
      * esp-dl (examples/ai_model_gallery/main/app_main.cpp:311-316), and nothing
      * swaps bytes.
      */
-    esp_err_t to_model_input(const Frame &src, uint32_t want_w, uint32_t want_h,
-                             Image &out) override
+    esp_err_t to_model_input(const Frame &src, ModelImage &out) override
     {
-        return to_image(src, want_w, want_h, PPA_SRM_COLOR_MODE_RGB888,
-                        PixelOrder::BGR, RGB888_BPP, model_, out);
+        Converted converted{};
+        esp_err_t ret = to_image(src, PPA_SRM_COLOR_MODE_RGB888, RGB888_BPP, model_,
+                                 converted);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        camera::fill_model_image(out, converted.data, converted.geometry,
+                                 converted.stride, converted.bytes, PixelOrder::BGR);
+        return ESP_OK;
     }
 
     /**
@@ -249,14 +255,28 @@ public:
      * not describe this layout: 16-bit RGB565 is packed as ESP_COLOR_FOURCC_RGB16
      * and has no component-order ambiguity (esp_hal_ppa/include/hal/ppa_types.h:52).
      */
-    esp_err_t to_display(const Frame &src, uint32_t want_w, uint32_t want_h,
-                         Image &out) override
+    esp_err_t to_display(const Frame &src, DisplayImage &out) override
     {
-        return to_image(src, want_w, want_h, PPA_SRM_COLOR_MODE_RGB565,
-                        PixelOrder::RGB, RGB_DISPLAY_BPP, disp_, out);
+        Converted converted{};
+        esp_err_t ret = to_image(src, PPA_SRM_COLOR_MODE_RGB565, RGB_DISPLAY_BPP,
+                                 disp_, converted);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        camera::fill_display_image(out, converted.data, converted.geometry,
+                                   converted.stride, converted.bytes);
+        return ESP_OK;
     }
 
 private:
+    /** What one PPA pass produced, before it is described in the caller's terms. */
+    struct Converted {
+        const uint8_t *data;
+        Geometry       geometry;
+        uint32_t       stride;
+        uint32_t       bytes;
+    };
+
     /** Register the PPA client the conversions run through. */
     esp_err_t register_ppa()
     {
@@ -272,29 +292,28 @@ private:
     }
 
     /**
-     * One PPA pass: a UYVY frame in, an image in `out_cm` out, scaled to
-     * want_w x want_h into a devkit-owned buffer that is allocated once and
-     * reused.
+     * One PPA pass: a UYVY frame in, an image in `out_cm` out, scaled to this
+     * devkit's geometry() into a buffer that is allocated once and reused.
      *
      * The driver derives the output block size from the input block times the
-     * (1/16-truncated) scale factor, so a request whose ratio is not a whole
-     * number of 1/16ths produces an image a row or column short — warned about
-     * below rather than silently returned wrong.
+     * (1/16-truncated) scale factor, so a sensor mode whose ratio to that
+     * geometry is not a whole number of 1/16ths produces an image a row or column
+     * short — warned about below rather than silently returned wrong.
      */
-    esp_err_t to_image(const Frame &src, uint32_t want_w, uint32_t want_h,
-                       ppa_srm_color_mode_t out_cm, PixelOrder order,
-                       uint32_t out_bpp, camera::ImageBuffer &buffer, Image &out)
+    esp_err_t to_image(const Frame &src, ppa_srm_color_mode_t out_cm,
+                       uint32_t out_bpp, camera::ImageBuffer &buffer,
+                       Converted &out)
     {
         esp_err_t ret = camera::validate_frame(src, FrameFormat::UYVY, "conversion");
         if (ret != ESP_OK) {
             return ret;
         }
-        /* The PPA needs a frame and a request to divide: the shared check above
+        /* The PPA needs a frame and a size to divide: the shared check above
          * cannot see these, and they are this devkit's requirement. */
-        if (src.stride == 0 || src.width == 0 || src.height == 0 ||
-            want_w == 0 || want_h == 0) {
+        if (src.stride == 0 || src.geometry.width == 0 || src.geometry.height == 0) {
             return ESP_ERR_INVALID_ARG;
         }
+        const Geometry want = geometry();
         if (ppa_ == nullptr) {
             ESP_LOGE(TAG, "conversion: no PPA client");
             return ESP_ERR_INVALID_STATE;
@@ -320,15 +339,16 @@ private:
         }
 
         const uint32_t needed =
-            static_cast<uint32_t>(align_up(static_cast<size_t>(want_w) * want_h * out_bpp,
+            static_cast<uint32_t>(align_up(static_cast<size_t>(want.width) * want.height
+                                               * out_bpp,
                                            PPA_ALIGNMENT));
         ret = buffer.reserve(needed, "conversion");
         if (ret != ESP_OK) {
             return ret;
         }
 
-        const float scale_x = static_cast<float>(want_w) / static_cast<float>(src.width);
-        const float scale_y = static_cast<float>(want_h) / static_cast<float>(src.height);
+        const float scale_x = static_cast<float>(want.width) / static_cast<float>(src.geometry.width);
+        const float scale_y = static_cast<float>(want.height) / static_cast<float>(src.geometry.height);
         if ((scale_x * PPA_SCALE_STEPS) - static_cast<long>(scale_x * PPA_SCALE_STEPS) > 0.001f ||
             (scale_y * PPA_SCALE_STEPS) - static_cast<long>(scale_y * PPA_SCALE_STEPS) > 0.001f) {
             ESP_LOGW(TAG, "PPA scale %.4f x %.4f is not a whole 1/16 step",
@@ -338,16 +358,16 @@ private:
         ppa_srm_oper_config_t op = {};
         op.in.buffer       = const_cast<uint8_t *>(src.data);
         op.in.pic_w        = src.stride / UYVY_BPP;   /* UYVY: two bytes per pixel */
-        op.in.pic_h        = src.height;
-        op.in.block_w      = src.width;
-        op.in.block_h      = src.height;
+        op.in.pic_h        = src.geometry.height;
+        op.in.block_w      = src.geometry.width;
+        op.in.block_h      = src.geometry.height;
         op.in.srm_cm       = PPA_SRM_COLOR_MODE_YUV422_UYVY;
         op.in.yuv_range    = PPA_COLOR_RANGE_LIMIT;
         op.in.yuv_std      = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
         op.out.buffer      = buffer.data();
         op.out.buffer_size = buffer.size();
-        op.out.pic_w       = want_w;
-        op.out.pic_h       = want_h;
+        op.out.pic_w       = want.width;
+        op.out.pic_h       = want.height;
         op.out.srm_cm      = out_cm;
         op.rotation_angle  = PPA_SRM_ROTATION_ANGLE_0;
         op.scale_x         = scale_x;
@@ -369,8 +389,10 @@ private:
             return ret;
         }
 
-        camera::fill_image(out, buffer.data(), want_w, want_h, want_w * out_bpp,
-                           static_cast<uint32_t>(want_w) * want_h * out_bpp, order);
+        out.data     = buffer.data();
+        out.geometry = want;
+        out.stride   = want.width * out_bpp;
+        out.bytes    = static_cast<uint32_t>(want.width) * want.height * out_bpp;
         return ESP_OK;
     }
 
@@ -494,11 +516,10 @@ private:
 
         memcpy(fb_, frame.data, frame.size);
 
-        out.data   = fb_;
-        out.width  = frame.width;
-        out.height = frame.height;
-        out.stride = frame.bytes_per_line ? frame.bytes_per_line
-                                          : frame.width * UYVY_BPP;
+        out.data     = fb_;
+        out.geometry = Geometry{frame.width, frame.height};
+        out.stride   = frame.bytes_per_line ? frame.bytes_per_line
+                                            : frame.width * UYVY_BPP;
         out.bytes  = static_cast<uint32_t>(frame.size);
         out.format = FrameFormat::UYVY;
         return ESP_OK;

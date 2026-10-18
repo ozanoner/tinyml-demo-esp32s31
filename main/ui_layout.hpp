@@ -11,8 +11,8 @@
  *
  * The picture is placed 1:1 and never scaled: the detector's boxes are drawn
  * over it from the detector's own coordinates, so any scaling here would
- * misplace every box. Pass the geometry the frame was *produced* at (the
- * devkit::Image's width/height), not the size that was requested.
+ * misplace every box. Pass the geometry the image was *produced* at
+ * (ModelImage::geometry), which is what the boxes are expressed in.
  */
 
 #pragma once
