@@ -26,13 +26,15 @@ public:
      *
      * @param title      multi-line title text (Montserrat 28)
      * @param hint       footer hint   (Montserrat 14)
-     * @param timeout_ms auto-dismiss period (default 5000)
+     * @param timeout_ms auto-dismiss period; the caller supplies it — the app's
+     *                   value is policy::kPolicy.splash_ms, and a default here
+     *                   would be a second place to change it (issue #61)
      * @param cb         optional dismissal callback
      * @param cb_arg     opaque pointer passed back to @p cb
      */
     Splash(const char  *title,
            const char  *hint,
-           uint32_t     timeout_ms = 5000,
+           uint32_t     timeout_ms,
            on_dismiss_t cb         = nullptr,
            void        *cb_arg     = nullptr);
 

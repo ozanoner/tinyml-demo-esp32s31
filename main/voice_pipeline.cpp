@@ -5,6 +5,7 @@
 
 #include "sdkconfig.h"          /* CONFIG_AUDIO_METRICS (#53) */
 #include "voice_pipeline.hpp"
+#include "policy.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -94,7 +95,6 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     : afe_handle_(nullptr),
       afe_data_(nullptr),
       audio_(audio),
-      dual_mic_(false),
       multinet_(nullptr),
       mn_data_(nullptr),
       feed_task_(nullptr),
@@ -106,8 +106,7 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
       timeout_timer_(nullptr),
       on_wakeword_(std::move(on_wakeword)),
       on_command_(std::move(on_command)),
-      on_timeout_(std::move(on_timeout)),
-      command_threshold_(0.0f)
+      on_timeout_(std::move(on_timeout))
 {
     ESP_LOGI(TAG, "Voice pipeline starting...");
 
@@ -127,9 +126,11 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
      * permanent, not an init-time cost. */
     if (feed_stack_ == nullptr) {
         feed_stack_ = static_cast<StackType_t *>(
-            heap_caps_malloc(TASK_STACK_UNITS * sizeof(StackType_t), MALLOC_CAP_INTERNAL));
+            heap_caps_malloc(policy::kPolicy.voice_task_stack * sizeof(StackType_t),
+                             MALLOC_CAP_INTERNAL));
         detect_stack_ = static_cast<StackType_t *>(
-            heap_caps_malloc(TASK_STACK_UNITS * sizeof(StackType_t), MALLOC_CAP_INTERNAL));
+            heap_caps_malloc(policy::kPolicy.voice_task_stack * sizeof(StackType_t),
+                             MALLOC_CAP_INTERNAL));
         if (feed_stack_ == nullptr || detect_stack_ == nullptr) {
             ESP_LOGE(TAG, "task stack allocation failed (feed=%p detect=%p)",
                      static_cast<void *>(feed_stack_), static_cast<void *>(detect_stack_));
@@ -140,7 +141,8 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
             return;
         }
         ESP_LOGI(TAG, "task stacks allocated: 2 x %u bytes, internal, before the AFE",
-                 static_cast<unsigned>(TASK_STACK_UNITS * sizeof(StackType_t)));
+                 static_cast<unsigned>(policy::kPolicy.voice_task_stack
+                                       * sizeof(StackType_t)));
     }
 
     /* ---- 1. Open the microphone through the devkit ------------------- */
@@ -149,9 +151,12 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
         return;
     }
 
-    /* The microphone geometry decides how the AFE reports a wake word. */
+    /* The microphone format the devkit reports — "M" single, "MM" dual — and it
+     * is what afe_config_init() below turns into the AFE's channel geometry.
+     * Logged so the resolved format is a visible fact at boot (issue #61, A16). */
     const char *mic_format = audio_->afe_mic_format();
-    dual_mic_ = (mic_format != nullptr && strcmp(mic_format, "MM") == 0);
+    ESP_LOGI(TAG, "Microphone format: \"%s\"",
+             mic_format != nullptr ? mic_format : "(none)");
 
     esp_err_t ret = audio_->open_mic();
     if (ret != ESP_OK) {
@@ -223,17 +228,20 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     }
     ESP_LOGI(TAG, "AFE created");
 
-    /* Lower WakeNet threshold */
-    afe_handle_->set_wakenet_threshold(afe_data_, 1, 0.3f);
-    afe_handle_->set_wakenet_threshold(afe_data_, 2, 0.3f);
-    ESP_LOGI(TAG, "WakeNet threshold set to 0.3");
+    /* Lower WakeNet threshold (policy::kPolicy.wake_threshold) */
+    afe_handle_->set_wakenet_threshold(afe_data_, 1,
+                                       policy::kPolicy.wake_threshold);
+    afe_handle_->set_wakenet_threshold(afe_data_, 2,
+                                       policy::kPolicy.wake_threshold);
+    ESP_LOGI(TAG, "WakeNet threshold set to %.2f",
+             (double)policy::kPolicy.wake_threshold);
 
     /* MultiNet is created inside the detect task (matching skainet pattern).
      * This ensures it runs in the same thread context where detect() is called. */
 
     /* ---- 4. Create timeout timer (15 s, one-shot) -------------------- */
     timeout_timer_ = xTimerCreate("voice_timeout",
-                                  pdMS_TO_TICKS(15000),
+                                  pdMS_TO_TICKS(policy::kPolicy.command_window_ms),
                                   pdFALSE,
                                   this,
                                   timeout_timer_fn);
@@ -250,9 +258,10 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
     /* Static creation over the PSRAM stacks taken in step 0 (issue #63): the
      * internal heap is asked for nothing here, so "feed task creation failed"
      * cannot happen. */
-    feed_task_ = xTaskCreateStaticPinnedToCore(feed_task_fn, "feed",
-                                               TASK_STACK_UNITS,
-                                               this, 5, feed_stack_, &feed_tcb_, 0);
+    feed_task_ = xTaskCreateStaticPinnedToCore(
+        feed_task_fn, "feed", policy::kPolicy.voice_task_stack, this,
+        policy::kPolicy.feed_task_prio, feed_stack_, &feed_tcb_,
+        policy::kPolicy.feed_task_core);
     if (feed_task_ == nullptr) {
         ESP_LOGE(TAG, "feed task creation failed");
         task_flag_ = 0;
@@ -262,9 +271,10 @@ VoicePipeline::VoicePipeline(devkit::Audio *audio,
         return;
     }
 
-    detect_task_ = xTaskCreateStaticPinnedToCore(detect_task_fn, "detect",
-                                                 TASK_STACK_UNITS,
-                                                 this, 5, detect_stack_, &detect_tcb_, 1);
+    detect_task_ = xTaskCreateStaticPinnedToCore(
+        detect_task_fn, "detect", policy::kPolicy.voice_task_stack, this,
+        policy::kPolicy.detect_task_prio, detect_stack_, &detect_tcb_,
+        policy::kPolicy.detect_task_core);
     if (detect_task_ == nullptr) {
         ESP_LOGE(TAG, "detect task creation failed");
         task_flag_ = 0;
@@ -476,8 +486,8 @@ void VoicePipeline::detect_task_fn(void *arg)
         return;
     }
 
-    constexpr int VAD_TIMEOUT_MS = 6000;
-    model_iface_data_t *model_data = multinet->create(mn_name, VAD_TIMEOUT_MS);
+    model_iface_data_t *model_data =
+        multinet->create(mn_name, policy::kPolicy.multinet_vad_timeout_ms);
     if (model_data == nullptr) {
         ESP_LOGE(TAG, "detect: multinet->create failed");
         self->task_flag_ = 0;
@@ -539,9 +549,10 @@ void VoicePipeline::detect_task_fn(void *arg)
              sizeof(cmds) / sizeof(cmds[0]));
     multinet->print_active_speech_commands(model_data);
 
-    /* Lower detection threshold */
-    multinet->set_det_threshold(model_data, 0.3f);
-    ESP_LOGI(TAG, "MultiNet threshold set to 0.3");
+    /* Detection threshold — the single command gate (policy.hpp) */
+    multinet->set_det_threshold(model_data, policy::kPolicy.multinet_det_threshold);
+    ESP_LOGI(TAG, "MultiNet threshold set to %.2f",
+             (double)policy::kPolicy.multinet_det_threshold);
 
     /* Store in VoicePipeline for destructor access */
     self->multinet_ = multinet;
@@ -600,23 +611,21 @@ void VoicePipeline::detect_task_fn(void *arg)
 #endif
 
         /* ---- Wake word -------------------------------------------------
-         * A dual-mic AFE reports the wake word in two stages: DETECTED, then
-         * CHANNEL_VERIFIED once it has picked the microphone to listen on.
-         * Command mode starts on the verified stage. A single-mic devkit has
-         * no second stage, so it starts on DETECTED. */
+         * Command mode starts on WAKENET_DETECTED.
+         *
+         * A dual-microphone AFE can additionally report CHANNEL_VERIFIED once
+         * it has picked the microphone to listen on, and this pipeline used to
+         * wait for that on the boards that report "MM". No devkit reports it:
+         * the Korvo-1 has a two-microphone array but its codec is opened mono,
+         * and that choice was measured better than the two-mic path (issue #46),
+         * so both devkits report "M" and the waiting branch was unreachable
+         * (issue #61, A16). Removed rather than kept dormant: a path no build
+         * can exercise is not covered by any test, and the format is logged at
+         * init so a devkit that does report "MM" is visible. */
         if (res->wakeup_state == WAKENET_DETECTED) {
             ESP_LOGI(TAG, ">>> Wake word detected <<<");
             /* Clean MultiNet state on wake word — skainet pattern */
             multinet->clean(model_data);
-
-            if (!self->dual_mic_) {
-                self->enter_command_mode_on_wake();
-            }
-        }
-
-        if (self->dual_mic_ && res->wakeup_state == WAKENET_CHANNEL_VERIFIED) {
-            ESP_LOGI(TAG, ">>> Channel verified (index %d) <<<",
-                     res->trigger_channel_id);
             self->enter_command_mode_on_wake();
         }
 
@@ -653,21 +662,23 @@ void VoicePipeline::detect_task_fn(void *arg)
                     }
 #endif
 
-                    float prob = mn_result->prob[0];
-                    if (prob >= self->command_threshold_) {
-                        int cmd_id = mn_result->command_id[0];
-                        /* Use registered English text; fall back to raw string */
-                        const char *display =
-                            (cmd_id >= 0 && cmd_id < cmd_count)
-                                ? cmds[cmd_id]
-                                : mn_result->string;
-                        ESP_LOGI(TAG, ">>> Command detected: '%s' "
-                                 "(id=%d prob=%.3f) <<<",
-                                 display, cmd_id, (double)prob);
+                    /* No threshold gate here: the model's own det_threshold
+                     * (policy::kPolicy.multinet_det_threshold) is the single
+                     * gate, and everything it reports has already passed it
+                     * (issue #61, A11). */
+                    const float prob = mn_result->prob[0];
+                    int cmd_id = mn_result->command_id[0];
+                    /* Use registered English text; fall back to raw string */
+                    const char *display =
+                        (cmd_id >= 0 && cmd_id < cmd_count)
+                            ? cmds[cmd_id]
+                            : mn_result->string;
+                    ESP_LOGI(TAG, ">>> Command detected: '%s' "
+                             "(id=%d prob=%.3f) <<<",
+                             display, cmd_id, (double)prob);
 
-                        if (self->on_command_) {
-                            self->on_command_(display);
-                        }
+                    if (self->on_command_) {
+                        self->on_command_(display);
                     }
                 }
                 /* Continue listening for more commands within 15s window */

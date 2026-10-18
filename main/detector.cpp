@@ -42,7 +42,7 @@ dl::image::pix_type_t to_espdl_pix_type(devkit::PixelOrder order)
 
 /* Static task resources (PSRAM-backed stack), created once — see the member
  * comments in detector.hpp for why they are never re-initialised. */
-StackType_t  Detector::task_stack_[Detector::DETECT_TASK_STACK_UNITS]
+StackType_t  Detector::task_stack_[policy::kPolicy.detector_task_stack]
     __attribute__((section(".ext_ram.bss")));
 StaticTask_t Detector::task_tcb_;
 TaskHandle_t Detector::task_ = nullptr;
@@ -161,7 +161,9 @@ bool Detector::detect_async(const uint8_t *pixels,
     if (task_ == nullptr) {
         TaskHandle_t th = xTaskCreateStatic(task_entry, "detect",
                                             sizeof(task_stack_) / sizeof(StackType_t),
-                                            nullptr, 5, task_stack_, &task_tcb_);
+                                            nullptr,
+                                            policy::kPolicy.detector_task_prio,
+                                            task_stack_, &task_tcb_);
         if (th == nullptr) {
             ESP_LOGE(TAG, "Failed to create the inference task");
             infer_busy_.store(false);

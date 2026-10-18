@@ -36,6 +36,7 @@ extern "C" {
 #include "devkit.hpp"
 #include "detector.hpp"
 #include "main_screen.hpp"
+#include "policy.hpp"
 #include "ui_theme.hpp"
 #include "voice_pipeline.hpp"
 
@@ -110,14 +111,23 @@ void App::print_memory_summary(const char *label) const
              (unsigned long)largest,
              (unsigned long)largest_sram);
 
-    constexpr size_t total_sram  = 512 * 1024;
-    constexpr size_t total_psram = 16 * 1024 * 1024;
+    /* Compared against the allocator's own region totals rather than a nameplate
+     * capacity, so numerator and denominator describe the same pool: the warning
+     * then means "this little of the memory that exists to be allocated is
+     * left", on any board and in any configuration (issue #61, A22). The static
+     * totals this replaces — 512 KB and 16 MB — were only true of a board with
+     * exactly that much and only while PSRAM was enabled. */
+    const size_t   total_sram  = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    const size_t   total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const uint32_t warn_used   = policy::kPolicy.memory_warn_used_percent;
 
-    if (free_sram < total_sram / 5) {
-        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds 80%!");
+    if (total_sram != 0 && free_sram < total_sram / 100 * (100 - warn_used)) {
+        ESP_LOGW(TAG, "\u26a0  SRAM usage exceeds %lu%%!",
+                 (unsigned long)warn_used);
     }
-    if (free_psram < total_psram / 5) {
-        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds 80%!");
+    if (total_psram != 0 && free_psram < total_psram / 100 * (100 - warn_used)) {
+        ESP_LOGW(TAG, "\u26a0  PSRAM usage exceeds %lu%%!",
+                 (unsigned long)warn_used);
     }
 }
 
@@ -155,13 +165,12 @@ void App::start()
      * The main screen is built from this splash's dismissal, which fires on the
      * LVGL task (both paths: the timer and the tap). That is where MainScreen
      * must be constructed, and why the dismissal carries `this`. */
-    static constexpr uint32_t kSplashMs = 5000;
     if (!display_->lock(0)) {
         ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
     } else {
         Splash splash(ui::text::kSplashTitle,
                       ui::text::kSplashHint,
-                      kSplashMs,
+                      policy::kPolicy.splash_ms,
                       splash_dismissed,
                       this);
         display_->unlock();

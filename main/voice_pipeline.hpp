@@ -25,6 +25,8 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 
+#include "policy.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -98,14 +100,6 @@ public:
         start_command_timeout();
     }
 
-    /**
-     * @brief Set confidence threshold for command detection.
-     *
-     * Commands with probability below this threshold are ignored.
-     * Default is 0.0 (accept all detections).
-     */
-    void set_command_threshold(float threshold) { command_threshold_ = threshold; }
-
 private:
     /* ---- AFE data ------------------------------------------------------ */
     const esp_afe_sr_iface_t *afe_handle_;
@@ -116,11 +110,6 @@ private:
 
     /* ---- Devkit audio interface (microphone access) ------------------- */
     devkit::Audio            *audio_;
-
-    /* ---- AFE microphone geometry -------------------------------------- */
-    /* Dual-mic AFE reports the wake word in two stages (DETECTED, then
-     * CHANNEL_VERIFIED); a single-mic devkit has no second stage. */
-    bool                      dual_mic_;
 
     /* ---- MultiNet ----------------------------------------------------- */
     const esp_mn_iface_t  *multinet_;
@@ -160,7 +149,8 @@ private:
      * updating. Keeping these internal preserves the balance that lets the panel
      * flush. Freed in the destructor: vTaskDelete does not free a caller's stack.
      */
-    static constexpr size_t TASK_STACK_UNITS = 8 * 1024;   /* 8 KB on this port */
+    /* The size itself is policy::kPolicy.voice_task_stack (policy.hpp); the
+     * placement reasoning above is what keeps it in internal RAM. */
     static StaticTask_t feed_tcb_;
     static StaticTask_t detect_tcb_;
     StackType_t *feed_stack_;
@@ -177,14 +167,11 @@ private:
     callback_t on_command_;
     callback_t on_timeout_;
 
-    /* ---- Confidence threshold ----------------------------------------- */
-    float command_threshold_;
-
     /* ---- Internal FreeRTOS task functions (static) -------------------- */
     static void feed_task_fn(void *arg);
     static void detect_task_fn(void *arg);
     static void timeout_timer_fn(TimerHandle_t timer);
 
-    /** Command mode entry shared by both AFE wake-word paths. */
+    /** Command mode entry, on the AFE's wake-word report. */
     void enter_command_mode_on_wake();
 };

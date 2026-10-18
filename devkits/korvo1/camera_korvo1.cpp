@@ -43,11 +43,32 @@ namespace {
 
 constexpr const char *TAG = "camera";
 
-/* Sensor configuration for this devkit: 240x240 RGB565 big-endian (see this
- * devkit's sdkconfig.defaults), i.e. 2 bytes per pixel. */
+/* ---- Hardware facts: the sensor mode this devkit's sdkconfig selects ------
+ *
+ * The frame geometry is not declared here; it is read from the OV3660 mode that
+ * devkits/korvo1/sdkconfig.defaults selects. Declaring it a second time meant a
+ * changed mode produced a silently wrong frame size and pixel format instead of
+ * a build error — and this build enables more than one mode
+ * (CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_640X480_10FPS is also =y), so only the
+ * DEFAULT_FMT symbol says what the driver will actually deliver. A mode added to
+ * sdkconfig.defaults therefore fails the build here until its geometry is
+ * declared (issue #61). */
+#if CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS
 constexpr uint32_t FRAME_W   = 240;
 constexpr uint32_t FRAME_H   = 240;
-constexpr uint32_t FRAME_BPP = 2;
+constexpr uint32_t FRAME_BPP = 2;   /* RGB565 */
+#else
+#error "camera_korvo1.cpp: the OV3660 DVP default format selected in devkits/korvo1/sdkconfig.defaults is not handled — declare its frame geometry and pixel format here"
+#endif
+
+/* ---- This devkit's capture policy ---------------------------------------
+ *
+ * Bounds for this camera's capture path, named once. They belong to the devkit
+ * rather than to the application's policy (main/policy.hpp) because each one is
+ * a property of this sensor, this driver and this buffer layout: the OV3660's
+ * exposure ramp, esp_video's dequeue, the USERPTR slots. The same rule keeps the
+ * screen's pixel metrics in ui::Metrics and the app's timings in policy.hpp. */
+namespace camera_policy {
 
 /* Bound on the driver's dequeue wait.  Matches the poll() timeout in capture():
  * the poll cannot gate DQBUF (the driver's VFS has no poll handler), so the
@@ -61,10 +82,22 @@ constexpr uint32_t FRAME_BPP = 2;
 #ifndef KORVO1_DQBUF_TIMEOUT_MS
 #define KORVO1_DQBUF_TIMEOUT_MS 500
 #endif
-constexpr uint32_t DQBUF_TIMEOUT_MS = KORVO1_DQBUF_TIMEOUT_MS;
+constexpr uint32_t kDequeueTimeoutMs = KORVO1_DQBUF_TIMEOUT_MS;
+
+/* The poll() bound is the same wait, expressed for poll(). It must equal the
+ * driver bound, so it is derived from it rather than written a second time. */
+constexpr int kPollTimeoutMs = static_cast<int>(kDequeueTimeoutMs);
 
 /* One full frame per USERPTR slot. */
-constexpr int BUFFER_COUNT = 3;
+constexpr int kBufferCount = 3;
+
+/* Auto-exposure settle: the ramp is converged by the minimum number of frames;
+ * agreement means the mean luma moved by no more than this percentage. */
+constexpr int kSettleMinFrames    = 5;
+constexpr int kSettleMaxFrames    = 10;
+constexpr int kSettleDeltaPercent = 10;
+
+}  // namespace camera_policy
 
 int xioctl(int fd, unsigned long request, void *arg)
 {
@@ -88,7 +121,7 @@ public:
         }
 
         const uint32_t frame_bytes = FRAME_W * FRAME_H * FRAME_BPP;
-        const uint32_t total       = frame_bytes * BUFFER_COUNT;
+        const uint32_t total       = frame_bytes * camera_policy::kBufferCount;
 
         fb_ = static_cast<uint8_t *>(
             heap_caps_aligned_alloc(64, total,
@@ -101,7 +134,7 @@ public:
         fb_size_ = total;
 
         ESP_LOGI(TAG, "Frame buffer: %lu bytes, %d x %lux%lu RGB565 (%lu bytes/frame)",
-                 (unsigned long)fb_size_, BUFFER_COUNT,
+                 (unsigned long)fb_size_, camera_policy::kBufferCount,
                  (unsigned long)FRAME_W, (unsigned long)FRAME_H,
                  (unsigned long)frame_bytes);
     }
@@ -148,10 +181,11 @@ public:
          * (esp_video_vfs.c:118-137), so the poll() in step 6 cannot gate the
          * dequeue: without this, a capture that finds no frame never returns and
          * the caller is stuck inside it for good (issue #36).  With it, DQBUF
-         * fails after DQBUF_TIMEOUT_MS and the caller reports a failed capture. */
+         * fails after camera_policy::kDequeueTimeoutMs and the caller reports a
+         * failed capture. */
         struct timeval dqbuf_timeout;
         dqbuf_timeout.tv_sec  = 0;
-        dqbuf_timeout.tv_usec = DQBUF_TIMEOUT_MS * 1000;
+        dqbuf_timeout.tv_usec = camera_policy::kDequeueTimeoutMs * 1000;
         if (xioctl(fd, VIDIOC_S_DQBUF_TIMEOUT, &dqbuf_timeout) != 0) {
             ESP_LOGW(TAG, "VIDIOC_S_DQBUF_TIMEOUT failed: %s — the dequeue wait "
                           "stays unbounded", strerror(errno));
@@ -214,7 +248,7 @@ public:
         /* ---- 3. Request USERPTR buffers (kernel writes into our PSRAM) -- */
         struct v4l2_requestbuffers req;
         memset(&req, 0, sizeof(req));
-        req.count  = BUFFER_COUNT;
+        req.count  = camera_policy::kBufferCount;
         req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_USERPTR;
 
@@ -225,7 +259,7 @@ public:
         }
 
         /* ---- 4. Queue them — one full frame per slot -------------------- */
-        for (int i = 0; i < BUFFER_COUNT; i++) {
+        for (int i = 0; i < camera_policy::kBufferCount; i++) {
             struct v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
             buf.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -262,10 +296,6 @@ public:
          * ------------------------------------------------------------------ */
         esp_err_t ret = ESP_OK;
         {
-            constexpr int kSettleMinFrames    = 5;   /* ramp is converged by here */
-            constexpr int kSettleMaxFrames    = 10;
-            constexpr int kSettleDeltaPercent = 10;
-
             auto mean_luma = [](const uint8_t *p, uint32_t pixels) {
                 uint32_t sum = 0;
                 for (uint32_t i = 0; i < pixels; i++) {
@@ -290,10 +320,11 @@ public:
                 pfd.fd     = fd;
                 pfd.events = POLLIN;
 
-                const int pret = poll(&pfd, 1, 500);
+                const int pret = poll(&pfd, 1, camera_policy::kPollTimeoutMs);
                 if (pret <= 0) {
                     if (pret == 0) {
-                        ESP_LOGE(TAG, "VIDIOC_DQBUF timed out after 500 ms");
+                        ESP_LOGE(TAG, "VIDIOC_DQBUF timed out after %lu ms",
+                                 (unsigned long)camera_policy::kDequeueTimeoutMs);
                     } else {
                         ESP_LOGE(TAG, "poll() failed: %s", strerror(errno));
                     }
@@ -321,10 +352,10 @@ public:
 
                 if (tries > 1) {
                     const uint32_t delta = (luma > prev) ? luma - prev : prev - luma;
-                    settled = (tries >= kSettleMinFrames) &&
-                              (delta * 100) <= (prev * kSettleDeltaPercent);
+                    settled = (tries >= camera_policy::kSettleMinFrames) &&
+                              (delta * 100) <= (prev * camera_policy::kSettleDeltaPercent);
                 }
-                if (settled || tries >= kSettleMaxFrames) {
+                if (settled || tries >= camera_policy::kSettleMaxFrames) {
                     break;
                 }
 
@@ -346,7 +377,7 @@ public:
                 } else {
                     ESP_LOGW(TAG, "auto-exposure did not settle within %d frames "
                              "(mean luma %lu); using the last frame",
-                             kSettleMaxFrames, (unsigned long)luma);
+                             camera_policy::kSettleMaxFrames, (unsigned long)luma);
                 }
 
                 uint32_t bytes = (buf.bytesused < img_size) ? buf.bytesused
@@ -524,7 +555,7 @@ private:
         return ESP_OK;
     }
 
-    uint8_t *fb_;         /* capture buffer: BUFFER_COUNT frames */
+    uint8_t *fb_;         /* capture buffer: camera_policy::kBufferCount frames */
     uint32_t fb_size_;
     uint8_t *disp_;       /* display-form buffer, grown on demand */
     uint32_t disp_size_;
