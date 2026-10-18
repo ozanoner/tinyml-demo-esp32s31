@@ -9,6 +9,7 @@
 
 #include "splash.hpp"
 #include "esp_log.h"
+#include "esp_app_desc.h"
 
 static constexpr const char *TAG = "splash";
 
@@ -21,8 +22,8 @@ Splash::Splash(const char  *title,
                uint32_t     timeout_ms,
                on_dismiss_t cb,
                void        *cb_arg)
-    : scr_(lv_disp_get_scr_act(nullptr)), label_(nullptr), hint_(nullptr), timer_(nullptr),
-      cb_(cb), cb_arg_(cb_arg)
+    : scr_(lv_disp_get_scr_act(nullptr)), label_(nullptr), version_(nullptr), hint_(nullptr),
+      timer_(nullptr), cb_(cb), cb_arg_(cb_arg)
 {
     /* Dark background */
     lv_obj_set_style_bg_color(scr_, lv_color_hex(0x1a1a2e), 0);
@@ -40,6 +41,19 @@ Splash::Splash(const char  *title,
     lv_obj_set_style_text_color(hint_, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(hint_, &lv_font_montserrat_14, 0);
     lv_obj_align(hint_, LV_ALIGN_BOTTOM_MID, 0, -20);
+
+    /* Version line, just above the hint.  Taken from this image's own
+     * application descriptor, so it can only ever report what was built
+     * (issue #78).  Logged as well: the panel cannot be read from a serial
+     * capture, the boot log can. */
+    const char *version = esp_app_get_description()->version;
+    ESP_LOGI(TAG, "Version: %s", version);
+
+    version_ = lv_label_create(scr_);
+    lv_label_set_text(version_, version);
+    lv_obj_set_style_text_color(version_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(version_, &lv_font_montserrat_14, 0);
+    lv_obj_align(version_, LV_ALIGN_BOTTOM_MID, 0, -44);
 
     /* Auto-dismiss timer */
     timer_ = lv_timer_create(_on_timeout, timeout_ms, this);
@@ -107,6 +121,10 @@ void Splash::_cleanup()
     if (label_) {
         lv_obj_del(label_);
         label_ = nullptr;
+    }
+    if (version_) {
+        lv_obj_del(version_);
+        version_ = nullptr;
     }
     if (hint_) {
         lv_obj_del(hint_);

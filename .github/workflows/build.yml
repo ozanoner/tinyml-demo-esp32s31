@@ -43,6 +43,22 @@ jobs:
         run: |
           python3 tools/check_release_stamp.py --tag "$GITHUB_REF_NAME" --ref "$GITHUB_SHA"
 
+      # version.txt is the source of the reported version, and it outranks
+      # `git describe`, so the file has to name the release being built or the
+      # images would claim a version they are not (issue #78). Bumped in the
+      # release's code commit, never in the stamping commit: the check above
+      # rejects a release whose tree changed outside docs/architecture/ after
+      # the stamp.
+      - name: Compare version.txt with the tag being released
+        run: |
+          set -euo pipefail
+          v="$(tr -d '\r\n' < version.txt)"
+          if [ "$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error file=version.txt::version.txt says '$v' but this release is '$GITHUB_REF_NAME' — bump version.txt in the release's code commit"
+            exit 1
+          fi
+          echo "version.txt names this release: $v"
+
   build:
     name: build (${{ matrix.devkit }})
     runs-on: ubuntu-latest
@@ -71,12 +87,27 @@ jobs:
       - name: Pull the pinned toolchain
         run: docker pull "$IDF_IMAGE"
 
+      # A tag build takes its version from version.txt, which preflight has
+      # already compared with the tag. A manual run has no tag to be named by,
+      # and the file would make it claim the last release, so it names itself
+      # with the commit it was built from. A defined PROJECT_VER wins over
+      # version.txt (${IDF_PATH}/tools/cmake/project.cmake:849).
+      - name: Resolve the version string
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PROJECT_VER_ARGS=" >> "$GITHUB_ENV"
+          else
+            echo "PROJECT_VER_ARGS=-DPROJECT_VER=dispatch-g${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+
       - name: Build
         run: |
-          docker run --rm -v "$PWD":/project -w /project "$IDF_IMAGE" bash -lc '
+          docker run --rm -v "$PWD":/project -w /project \
+            -e PROJECT_VER_ARGS="$PROJECT_VER_ARGS" "$IDF_IMAGE" bash -lc '
             set -e
             . /opt/esp/idf/export.sh >/dev/null
-            idf.py --preset ${{ matrix.devkit }} build
+            idf.py --preset ${{ matrix.devkit }} $PROJECT_VER_ARGS build
             idf.py --preset ${{ matrix.devkit }} size
             idf.py --preset ${{ matrix.devkit }} merge-bin -o merged-${{ matrix.devkit }}.bin
           '
