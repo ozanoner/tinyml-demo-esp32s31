@@ -41,8 +41,9 @@
 namespace screen {
 
 /** Strip the theme's decoration: the screen draws flat, sized, positioned
- *  objects only — no borders, no radius, no padding, no scrolling. Shared with
- *  the rows and boxes ResultView builds. */
+ *  objects only — no borders, no radius, no padding, no scrolling. Also makes
+ *  the object non-interactive, so it cannot swallow a tap aimed at the screen
+ *  (issue #85). Shared with the rows and boxes ResultView builds. */
 void style_plain(lv_obj_t *obj);
 
 }  // namespace screen

@@ -26,6 +26,15 @@ void style_plain(lv_obj_t *obj)
 {
     lv_obj_remove_style_all(obj);
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    /* Non-interactive. lv_obj_create() hands every object LV_OBJ_FLAG_CLICKABLE
+     * (lv_obj.c:584), and the indev delivers LV_EVENT_CLICKED to the first child
+     * that hit-tests and stops there (lv_indev.c:641-650) — nothing bubbles up to
+     * the screen without LV_OBJ_FLAG_EVENT_BUBBLE. A decoration that keeps the
+     * flag is therefore a dead zone for the screen's tap handler: that is issue
+     * #85, where a tap on the picture died on a bounding-box rect instead of
+     * clearing the result. Nothing this screen draws is interactive but the
+     * screen itself. */
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
 }
 
 }  // namespace screen
