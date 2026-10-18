@@ -18,6 +18,7 @@
  */
 
 #include "devkit.hpp"
+#include "devkit/camera_support.hpp"
 
 #include "bsp/esp32_s31_korvo_1.h"
 #include "esp_video_device.h"
@@ -108,10 +109,16 @@ int xioctl(int fd, unsigned long request, void *arg)
     return r;
 }
 
+/* Both conversion buffers are PSRAM and nothing more: the software loops below
+ * read and write them from the CPU, so they need neither DMA capability nor
+ * cache-line alignment (the PPA on the other devkit does; see camera_support.hpp). */
+constexpr camera::ImageBuffer::Allocation kConversionBuffer{
+    1, MALLOC_CAP_SPIRAM, false};
+
 class CameraKorvo1 final : public Camera {
 public:
     CameraKorvo1()
-        : fb_(nullptr), fb_size_(0), disp_(nullptr), disp_size_(0)
+        : fb_(nullptr), fb_size_(0), disp_(kConversionBuffer), rgb_(kConversionBuffer)
     {
         /* Sensor bring-up, previously bsp_camera_start(NULL) in app_main. */
         esp_err_t ret = bsp_camera_start(NULL);
@@ -144,9 +151,7 @@ public:
         if (fb_ != nullptr) {
             heap_caps_free(fb_);
         }
-        if (disp_ != nullptr) {
-            heap_caps_free(disp_);
-        }
+        /* The two conversion buffers free themselves (camera_support.hpp). */
     }
 
     bool is_ok() const override { return fb_ != nullptr; }
@@ -431,12 +436,10 @@ public:
     esp_err_t to_model_input(const Frame &src, uint32_t want_w, uint32_t want_h,
                              Image &out) override
     {
-        if (src.data == nullptr) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (src.format != FrameFormat::RGB565_BE) {
-            ESP_LOGE(TAG, "to_model_input: unexpected source format %d", (int)src.format);
-            return ESP_ERR_NOT_SUPPORTED;
+        esp_err_t ret = camera::validate_frame(src, FrameFormat::RGB565_BE,
+                                               "to_model_input");
+        if (ret != ESP_OK) {
+            return ret;
         }
         if (want_w != src.width || want_h != src.height) {
             ESP_LOGW(TAG, "to_model_input: no scaler, giving %lux%lu not %lux%lu",
@@ -445,7 +448,7 @@ public:
         }
 
         const uint32_t needed = src.width * src.height * 3u;
-        esp_err_t ret = ensure_rgb_buffer(needed);
+        ret = rgb_.reserve(needed, "RGB888");
         if (ret != ESP_OK) {
             return ret;
         }
@@ -453,10 +456,11 @@ public:
         const uint32_t w            = src.width;
         const uint32_t h            = src.height;
         const uint32_t src_stride   = (src.stride != 0) ? src.stride : w * 2u;
+        uint8_t       *dst          = rgb_.data();
 
         for (uint32_t y = 0; y < h; y++) {
             const uint8_t *srow = src.data + (size_t)(h - 1 - y) * src_stride;
-            uint8_t       *drow = rgb_ + (size_t)y * w * 3;
+            uint8_t       *drow = dst + (size_t)y * w * 3;
             for (uint32_t x = 0; x < w; x++) {
                 const uint16_t p = ((uint16_t)srow[x * 2] << 8) | srow[x * 2 + 1];
                 drow[x * 3 + 0] = (p >> 8) & 0xf8;
@@ -465,12 +469,9 @@ public:
             }
         }
 
-        out.data   = rgb_;
-        out.width  = src.width;
-        out.height = src.height;
-        out.stride = src.width * 3u;
-        out.bytes  = needed;
-        out.order  = PixelOrder::RGB;   /* R at the lowest address */
+        /* R at the lowest address: the software loop above writes it first. */
+        camera::fill_image(out, dst, src.width, src.height, src.width * 3u, needed,
+                           PixelOrder::RGB);
         return ESP_OK;
     }
 
@@ -483,12 +484,10 @@ public:
     esp_err_t to_display(const Frame &src, uint32_t want_w, uint32_t want_h,
                          Image &out) override
     {
-        if (src.data == nullptr) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (src.format != FrameFormat::RGB565_BE) {
-            ESP_LOGE(TAG, "to_display: unexpected source format %d", (int)src.format);
-            return ESP_ERR_NOT_SUPPORTED;
+        esp_err_t ret = camera::validate_frame(src, FrameFormat::RGB565_BE,
+                                               "to_display");
+        if (ret != ESP_OK) {
+            return ret;
         }
         if (want_w != src.width || want_h != src.height) {
             ESP_LOGW(TAG, "to_display: no scaler, showing %lux%lu not %lux%lu",
@@ -499,25 +498,16 @@ public:
         const uint32_t row_bytes    = src.width * FRAME_BPP;
         const uint32_t needed_bytes = row_bytes * src.height;
 
-        if (disp_ == nullptr || disp_size_ < needed_bytes) {
-            if (disp_ != nullptr) {
-                heap_caps_free(disp_);
-                disp_ = nullptr;
-            }
-            disp_ = static_cast<uint8_t *>(heap_caps_malloc(needed_bytes,
-                                                           MALLOC_CAP_SPIRAM));
-            if (disp_ == nullptr) {
-                ESP_LOGE(TAG, "OOM for display buffer (%lu bytes)",
-                         (unsigned long)needed_bytes);
-                return ESP_ERR_NO_MEM;
-            }
-            disp_size_ = needed_bytes;
+        ret = disp_.reserve(needed_bytes, "display");
+        if (ret != ESP_OK) {
+            return ret;
         }
+        uint8_t *dst = disp_.data();
 
         for (uint32_t y = 0; y < src.height; y++) {
             /* Row flip: bottom row first */
             const uint8_t *sr = src.data + (src.height - 1 - y) * row_bytes;
-            uint8_t       *dr = disp_ + y * row_bytes;
+            uint8_t       *dr = dst + y * row_bytes;
             for (uint32_t x = 0; x < src.width; x++) {
                 /* Byte swap: RGB565 BE -> LE */
                 dr[x * 2]     = sr[x * 2 + 1];
@@ -525,42 +515,15 @@ public:
             }
         }
 
-        out.data   = disp_;
-        out.width  = src.width;
-        out.height = src.height;
-        out.stride = row_bytes;
-        out.bytes  = needed_bytes;
+        camera::fill_image(out, dst, src.width, src.height, row_bytes, needed_bytes);
         return ESP_OK;
     }
 
 private:
-    /** The RGB888 buffer for the detector, grown on demand and reused. */
-    esp_err_t ensure_rgb_buffer(uint32_t needed)
-    {
-        if (rgb_ != nullptr && rgb_size_ >= needed) {
-            return ESP_OK;
-        }
-        if (rgb_ != nullptr) {
-            heap_caps_free(rgb_);
-            rgb_ = nullptr;
-            rgb_size_ = 0;
-        }
-        rgb_ = static_cast<uint8_t *>(heap_caps_malloc(needed, MALLOC_CAP_SPIRAM));
-        if (rgb_ == nullptr) {
-            ESP_LOGE(TAG, "OOM for RGB888 buffer (%lu bytes)",
-                     (unsigned long)needed);
-            return ESP_ERR_NO_MEM;
-        }
-        rgb_size_ = needed;
-        return ESP_OK;
-    }
-
     uint8_t *fb_;         /* capture buffer: camera_policy::kBufferCount frames */
     uint32_t fb_size_;
-    uint8_t *disp_;       /* display-form buffer, grown on demand */
-    uint32_t disp_size_;
-    uint8_t *rgb_;        /* detector-form buffer, grown on demand */
-    uint32_t rgb_size_;
+    camera::ImageBuffer disp_;   /* display-form buffer, grown on demand */
+    camera::ImageBuffer rgb_;    /* detector-form buffer, grown on demand */
 };
 
 }  // namespace

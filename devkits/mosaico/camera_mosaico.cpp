@@ -35,6 +35,7 @@
  */
 
 #include "devkit.hpp"
+#include "devkit/camera_support.hpp"
 
 #include "mosaico_module_camera.h"
 
@@ -103,12 +104,19 @@ size_t align_up(size_t value, size_t alignment)
     return (value + alignment - 1) / alignment * alignment;
 }
 
+/* What a PPA-facing conversion buffer needs: cache-line alignment, DMA
+ * capability, and zeroed memory — a pass truncated to the driver's 1/16 scale
+ * steps can produce an image a row short, and the zeroed tail is what shows
+ * (see camera_support.hpp). */
+constexpr camera::ImageBuffer::Allocation kConversionBuffer{
+    PPA_ALIGNMENT, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT, true};
+
 class CameraMosaico final : public Camera {
 public:
     CameraMosaico()
         : cam_(nullptr), opened_(false), ppa_(nullptr),
-          fb_(nullptr), fb_size_(0), model_(nullptr), model_size_(0),
-          disp_(nullptr), disp_size_(0)
+          fb_(nullptr), fb_size_(0),
+          model_(kConversionBuffer), disp_(kConversionBuffer)
     {
         /* A module, not a soldered sensor: the manager scans for it on a 250 ms
          * period and a claim waits discovery_timeout_ms (1500 ms), so a single
@@ -160,12 +168,7 @@ public:
         if (fb_ != nullptr) {
             heap_caps_free(fb_);
         }
-        if (model_ != nullptr) {
-            heap_caps_free(model_);
-        }
-        if (disp_ != nullptr) {
-            heap_caps_free(disp_);
-        }
+        /* The two conversion buffers free themselves (camera_support.hpp). */
     }
 
     /** True once the module handle exists and its video device is open. */
@@ -235,7 +238,7 @@ public:
                              Image &out) override
     {
         return to_image(src, want_w, want_h, PPA_SRM_COLOR_MODE_RGB888,
-                        PixelOrder::BGR, RGB888_BPP, model_, model_size_, out);
+                        PixelOrder::BGR, RGB888_BPP, model_, out);
     }
 
     /**
@@ -250,7 +253,7 @@ public:
                          Image &out) override
     {
         return to_image(src, want_w, want_h, PPA_SRM_COLOR_MODE_RGB565,
-                        PixelOrder::RGB, RGB_DISPLAY_BPP, disp_, disp_size_, out);
+                        PixelOrder::RGB, RGB_DISPLAY_BPP, disp_, out);
     }
 
 private:
@@ -280,16 +283,14 @@ private:
      */
     esp_err_t to_image(const Frame &src, uint32_t want_w, uint32_t want_h,
                        ppa_srm_color_mode_t out_cm, PixelOrder order,
-                       uint32_t out_bpp, uint8_t *&buf, uint32_t &buf_size,
-                       Image &out)
+                       uint32_t out_bpp, camera::ImageBuffer &buffer, Image &out)
     {
-        if (src.data == nullptr) {
-            return ESP_ERR_INVALID_ARG;
+        esp_err_t ret = camera::validate_frame(src, FrameFormat::UYVY, "conversion");
+        if (ret != ESP_OK) {
+            return ret;
         }
-        if (src.format != FrameFormat::UYVY) {
-            ESP_LOGE(TAG, "conversion: unexpected source format %d", (int)src.format);
-            return ESP_ERR_NOT_SUPPORTED;
-        }
+        /* The PPA needs a frame and a request to divide: the shared check above
+         * cannot see these, and they are this devkit's requirement. */
         if (src.stride == 0 || src.width == 0 || src.height == 0 ||
             want_w == 0 || want_h == 0) {
             return ESP_ERR_INVALID_ARG;
@@ -309,7 +310,7 @@ private:
          * frame straight from the driver). The size is rounded up because
          * esp_cache_msync wants whole cache lines; the buffer was allocated
          * rounded up for the same reason. */
-        esp_err_t ret = esp_cache_msync(
+        ret = esp_cache_msync(
             const_cast<uint8_t *>(src.data),
             align_up(src.bytes, PPA_ALIGNMENT),
             ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -321,21 +322,9 @@ private:
         const uint32_t needed =
             static_cast<uint32_t>(align_up(static_cast<size_t>(want_w) * want_h * out_bpp,
                                            PPA_ALIGNMENT));
-        if (buf == nullptr || buf_size < needed) {
-            if (buf != nullptr) {
-                heap_caps_free(buf);
-                buf = nullptr;
-                buf_size = 0;
-            }
-            buf = static_cast<uint8_t *>(heap_caps_aligned_calloc(
-                PPA_ALIGNMENT, 1, needed,
-                MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-            if (buf == nullptr) {
-                ESP_LOGE(TAG, "OOM for conversion buffer (%lu bytes)",
-                         (unsigned long)needed);
-                return ESP_ERR_NO_MEM;
-            }
-            buf_size = needed;
+        ret = buffer.reserve(needed, "conversion");
+        if (ret != ESP_OK) {
+            return ret;
         }
 
         const float scale_x = static_cast<float>(want_w) / static_cast<float>(src.width);
@@ -355,8 +344,8 @@ private:
         op.in.srm_cm       = PPA_SRM_COLOR_MODE_YUV422_UYVY;
         op.in.yuv_range    = PPA_COLOR_RANGE_LIMIT;
         op.in.yuv_std      = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
-        op.out.buffer      = buf;
-        op.out.buffer_size = buf_size;
+        op.out.buffer      = buffer.data();
+        op.out.buffer_size = buffer.size();
         op.out.pic_w       = want_w;
         op.out.pic_h       = want_h;
         op.out.srm_cm      = out_cm;
@@ -373,19 +362,15 @@ private:
 
         /* Make the PPA's writes visible to the CPU
          * (examples/ai_model_gallery/main/app_main.cpp:187-188). */
-        ret = esp_cache_msync(buf, buf_size,
+        ret = esp_cache_msync(buffer.data(), buffer.size(),
                               ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "esp_cache_msync(image) failed: %s", esp_err_to_name(ret));
             return ret;
         }
 
-        out.data   = buf;
-        out.width  = want_w;
-        out.height = want_h;
-        out.stride = want_w * out_bpp;
-        out.bytes  = static_cast<uint32_t>(want_w) * want_h * out_bpp;
-        out.order  = order;
+        camera::fill_image(out, buffer.data(), want_w, want_h, want_w * out_bpp,
+                           static_cast<uint32_t>(want_w) * want_h * out_bpp, order);
         return ESP_OK;
     }
 
@@ -524,10 +509,8 @@ private:
     ppa_client_handle_t     ppa_;      /* SRM client for both conversions */
     uint8_t                *fb_;       /* copy of the borrowed frame */
     uint32_t                fb_size_;
-    uint8_t                *model_;    /* detector-form buffer, grown on demand */
-    uint32_t                model_size_;
-    uint8_t                *disp_;     /* display-form buffer, grown on demand */
-    uint32_t                disp_size_;
+    camera::ImageBuffer     model_;    /* detector-form buffer, grown on demand */
+    camera::ImageBuffer     disp_;     /* display-form buffer, grown on demand */
 };
 
 }  // namespace
