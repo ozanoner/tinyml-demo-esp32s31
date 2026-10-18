@@ -177,8 +177,6 @@ void App::start()
         static_cast<int32_t>(policy::kPolicy.lvgl_lock_timeout_ms);
 
     if (!display_->lock(lock_ms)) {
-        ESP_LOGW(TAG, "LVGL lock busy after %ld ms — building the main screen "
-                      "without a splash", (long)lock_ms);
         /* One retry, not a loop: a ~23 ms flush cannot outlast a second, so a
          * second failure is a real fault and is reported as one. */
         if (display_->lock(lock_ms)) {
