@@ -61,19 +61,30 @@ constexpr uint32_t UYVY_BPP        = 2;
 constexpr uint32_t RGB888_BPP      = 3;
 constexpr uint32_t RGB_DISPLAY_BPP = 2;
 
-/* The geometry both conversions are produced at. The PPA scales in one pass and
- * truncates its factor to whole 1/16 steps (PPA_SCALE_STEPS), so the size asked
- * for has to be a whole number of those steps of the frame: 320x180 is exactly a
- * quarter of the sensor's 1280x720 frame in both axes, which keeps the 16:9
- * aspect ratio and lands on the scaler's grid. */
+/* ---- Hardware facts: the geometry both conversions are produced at --------
+ *
+ * The PPA scales in one pass and truncates its factor to whole 1/16 steps
+ * (PPA_SCALE_STEPS), so the size asked for has to be a whole number of those
+ * steps of the frame: 320x180 is exactly a quarter of the sensor's 1280x720
+ * frame in both axes, which keeps the 16:9 aspect ratio and lands on the
+ * scaler's grid. */
 constexpr uint32_t OUT_W = 320;
 constexpr uint32_t OUT_H = 180;
+
+/* ---- This devkit's capture policy ---------------------------------------
+ *
+ * Named once, in the devkit that owns the behaviour, for the same reason
+ * main/policy.hpp exists: a value tuned to this module means nothing to the
+ * OV3660, so the two boards' numbers do not share a file (issue #61). */
+namespace camera_policy {
 
 /* The camera is a hot-pluggable module, so it is not necessarily in its slot the
  * instant the app boots. Bounded retry, not a wait: three attempts, each of
  * which may itself wait up to discovery_timeout_ms inside the claim. */
-constexpr unsigned CAMERA_ATTEMPTS       = 3;
-constexpr uint32_t CAMERA_RETRY_DELAY_MS = 250;
+constexpr unsigned kModuleAttempts       = 3;
+constexpr uint32_t kModuleRetryDelayMs   = 250;
+
+}  // namespace camera_policy
 
 /* The PPA reads and writes DMA-able buffers, and the driver wants the external
  * ones aligned to the L1+L2 cache line sizes; the BSP's own examples use 128
@@ -106,12 +117,13 @@ public:
          * whole new/open sequence until it succeeds
          * (examples/camera_lcd_preview/main/main.c:133-160). Bounded here: a
          * module that is absent or unreadable must not hold the app at boot. */
-        for (unsigned attempt = 1; attempt <= CAMERA_ATTEMPTS; attempt++) {
+        for (unsigned attempt = 1; attempt <= camera_policy::kModuleAttempts;
+             attempt++) {
             if (attempt > 1) {
                 (void)mosaico_module_mgr_request_rescan(MOSAICO_MODULE_MGR_SLOT_LEFT);
-                vTaskDelay(pdMS_TO_TICKS(CAMERA_RETRY_DELAY_MS));
+                vTaskDelay(pdMS_TO_TICKS(camera_policy::kModuleRetryDelayMs));
                 ESP_LOGW(TAG, "Camera module not ready, attempt %u/%u",
-                         attempt, CAMERA_ATTEMPTS);
+                         attempt, camera_policy::kModuleAttempts);
             }
 
             if (bring_up() == ESP_OK) {
@@ -127,7 +139,7 @@ public:
         }
 
         ESP_LOGE(TAG, "Camera module not available after %u attempts",
-                 CAMERA_ATTEMPTS);
+                 camera_policy::kModuleAttempts);
     }
 
     ~CameraMosaico() override

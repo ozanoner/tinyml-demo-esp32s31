@@ -100,6 +100,22 @@ struct Metrics {
     /** Gap between the picture's bottom edge and the image's own directive line,
      *  pixels. That line is left-aligned with the picture. */
     int32_t image_dir_gap = 12;
+
+    /** Gap between the status line and the directive line beneath it, pixels. */
+    int32_t msg_line_gap = 14;
+
+    /** Swatch -> object name gap inside a detection row, pixels. */
+    int32_t row_pad_col = 8;
+
+    /** Width kept clear for the accuracy column ("100%" at 14 px), pixels. */
+    int32_t acc_reserve_w = 34;
+
+    /** Floor for the object-name column's text width, pixels. Below this a
+     *  crowded list would collapse the name to nothing. */
+    int32_t list_text_min_w = 20;
+
+    /** Bounding-box border drawn over the picture's boxes, pixels. */
+    int32_t box_border_w = 2;
 };
 
 inline constexpr Metrics kMetrics{};

@@ -103,8 +103,8 @@ public:
      *
      * "cheese": counts down 3-2-1 in the status line, then dispatches
      * countdown_cb_. Anything else: echoes the command in the status line for
-     * REVERT_MS and restores both lines. The directive line is blank in both
-     * cases — it carries directives, not events. Callable from any task.
+     * the echo period and restores both lines. The directive line is blank in
+     * both cases — it carries directives, not events. Callable from any task.
      */
     void show_command(const char *cmd);
 
@@ -200,10 +200,8 @@ private:
     dismiss_cb_t dismiss_cb_;
 
     /* ---- countdown / auto-revert / stuck detector --------------------- */
-    /** How long the capture worker may take before the failure is reported. */
-    static constexpr uint32_t CB_TIMEOUT_MS = 12000;
-    static constexpr uint32_t CB_TASK_STACK = 8192;
-    static constexpr UBaseType_t CB_TASK_PRIO = tskIDLE_PRIORITY + 2;
+    /* The countdown timings, the stuck-detector timeout and the capture
+     * worker's stack and priority are policy.hpp's — see policy::kPolicy. */
 
     lv_timer_t  *timer_;           /**< countdown tick / revert / stuck detector */
     int          countdown_;       /**< remaining countdown ticks (0 = none) */

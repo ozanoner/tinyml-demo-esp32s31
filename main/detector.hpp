@@ -25,6 +25,7 @@
 
 #include "devkit/camera.hpp"
 #include "dl_detect_define.hpp"
+#include "policy.hpp"
 
 class COCODetect;
 
@@ -45,12 +46,11 @@ public:
      * depth argument counts (configSTACK_DEPTH_TYPE = StackType_t,
      * FreeRTOS.h:2840). One unit is one byte on this port: StackType_t is uint8_t
      * (FreeRTOS-Kernel-SMP/portable/riscv/include/freertos/portmacro.h:79), so
-     * this is 8 KB. The depth at the call site is derived from the array itself
-     * (sizeof(task_stack_) / sizeof(StackType_t)) rather than from this constant,
-     * so the two cannot disagree on a port where a unit is wider.
+     * the size is 8 KB and it lives in policy.hpp with the rest of the task
+     * geometry (issue #61). The depth at the call site is derived from the array
+     * itself (sizeof(task_stack_) / sizeof(StackType_t)) rather than from the
+     * constant, so the two cannot disagree on a port where a unit is wider.
      */
-    static constexpr size_t DETECT_TASK_STACK_UNITS = 8 * 1024;   /* 8 KB here */
-
     /** Callback receives the result string + the detections. The list is passed
      *  by value so the task can move it out and nothing has to allocate to hand
      *  it over (issue #59). */
@@ -128,7 +128,7 @@ private:
      * whether a caller-provided TCB is free nor refuses one that is in use — it
      * memsets it (tasks.c:1291-1296) — so re-creating the task on these buffers
      * per frame would zero the TCB of the task still finishing on them. */
-    static StackType_t  task_stack_[DETECT_TASK_STACK_UNITS];
+    static StackType_t  task_stack_[policy::kPolicy.detector_task_stack];
     static StaticTask_t task_tcb_;
     static TaskHandle_t task_;      /**< created once; nullptr until then */
 

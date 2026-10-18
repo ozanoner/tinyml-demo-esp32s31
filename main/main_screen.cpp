@@ -19,6 +19,7 @@
 #include "main_screen.hpp"
 
 #include "devkit/display.hpp"
+#include "policy.hpp"
 #include "ui_theme.hpp"
 
 #include "object_labels.hpp"
@@ -33,13 +34,9 @@
 
 static constexpr const char *TAG = "screen";
 
-/* ---- Timing (unchanged from the UI this replaces) ------------------------ */
-static constexpr int      COUNTDOWN_START   = 3;      /* cheese 3... -> 2... -> 1... */
-static constexpr uint32_t COUNTDOWN_MS      = 1000;   /* one countdown tick per second */
-static constexpr uint32_t REVERT_MS         = 3000;   /* hold for a detected command */
-static constexpr int32_t  MSG_LINE_GAP      = 14;     /* status -> directive */
-static constexpr int32_t  ROW_PAD_COL       = 8;      /* swatch -> name gap in a list row */
-static constexpr int32_t  ACC_RESERVE_W     = 34;     /* width kept for "100%" at 14 px */
+/* Timing and task geometry are application policy (policy.hpp); the pixel
+ * metrics are the theme's (ui::Metrics, ui_theme.hpp). Nothing in this file
+ * decides behaviour by itself — issue #61. */
 
 TaskHandle_t MainScreen::s_cb_worker_  = nullptr;
 uint8_t     *MainScreen::s_img_buf_    = nullptr;
@@ -85,7 +82,7 @@ MainScreen::MainScreen(devkit::Display *display,
     , dismissed_(false)
     , timer_(nullptr)
     , countdown_(0)
-    , period_ms_(REVERT_MS)
+    , period_ms_(policy::kPolicy.command_echo_ms)
     , revert_to_(ui::text::kStateCommand)
     , countdown_cb_(nullptr)
     , status_{}
@@ -139,7 +136,7 @@ MainScreen::MainScreen(devkit::Display *display,
     lv_obj_set_flex_flow(msg_row_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(msg_row_, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(msg_row_, MSG_LINE_GAP, 0);
+    lv_obj_set_style_pad_row(msg_row_, ui::kMetrics.msg_line_gap, 0);
 
     status_lbl_ = lv_label_create(msg_row_);
     lv_obj_set_style_text_font(status_lbl_, ui::font::status(), 0);
@@ -181,7 +178,7 @@ MainScreen::MainScreen(devkit::Display *display,
     /* Countdown / auto-revert, re-purposed as the stuck detector while the
      * capture worker is busy. An LVGL timer, so on_timer() runs in the LVGL task
      * where the widgets live. */
-    timer_ = lv_timer_create(on_timer, COUNTDOWN_MS, this);
+    timer_ = lv_timer_create(on_timer, policy::kPolicy.countdown_tick_ms, this);
     if (timer_ == nullptr) {
         ESP_LOGE(TAG, "lv_timer_create failed — countdown and revert disabled");
     } else {
@@ -360,14 +357,14 @@ void MainScreen::show_command(const char *cmd)
 
     if (strcmp(cmd, "cheese") == 0) {
         /* Countdown in the status line: cheese 3... -> 2... -> 1... */
-        countdown_ = COUNTDOWN_START;
+        countdown_ = policy::kPolicy.countdown_start;
         snprintf(status_, sizeof(status_), ui::text::kCountdownFormat, countdown_);
-        period_ms_ = COUNTDOWN_MS;
+        period_ms_ = policy::kPolicy.countdown_tick_ms;
     } else {
-        /* Echo the command for REVERT_MS, then restore both lines. */
+        /* Echo the command for the echo period, then restore both lines. */
         countdown_ = 0;
         snprintf(status_, sizeof(status_), ui::text::kDetectedFormat, cmd);
-        period_ms_ = REVERT_MS;
+        period_ms_ = policy::kPolicy.command_echo_ms;
     }
     revert_to_ = ui::text::kStateCommand;
 
@@ -619,8 +616,11 @@ void MainScreen::build_rows(const std::list<dl::detect::result_t> &results)
 
     /* Width the name has to wrap inside: the column, less the swatch, the gap
      * after it, and what the accuracy needs at the right edge. */
-    int32_t text_w = layout_.list.w - ui::kMetrics.swatch - ROW_PAD_COL - ACC_RESERVE_W;
-    if (text_w < 20) text_w = 20;
+    int32_t text_w = layout_.list.w - ui::kMetrics.swatch
+                     - ui::kMetrics.row_pad_col - ui::kMetrics.acc_reserve_w;
+    if (text_w < ui::kMetrics.list_text_min_w) {
+        text_w = ui::kMetrics.list_text_min_w;
+    }
 
     if (results.empty()) {
         auto *lbl = lv_label_create(list_);
@@ -672,7 +672,7 @@ void MainScreen::build_rows(const std::list<dl::detect::result_t> &results)
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, ROW_PAD_COL, 0);
+        lv_obj_set_style_pad_column(row, ui::kMetrics.row_pad_col, 0);
 
         /* Swatch in the colour of this detection's box. */
         auto *swatch = lv_obj_create(row);
@@ -716,9 +716,6 @@ void MainScreen::clear_rows()
 // ---------------------------------------------------------------------------
 //  Private — bounding boxes over the picture (LVGL task)
 // ---------------------------------------------------------------------------
-
-/* Outline width the overlay has always used (result_display.cpp before #41). */
-static constexpr int32_t BOX_BORDER_WIDTH = 2;
 
 void MainScreen::build_boxes(const std::list<dl::detect::result_t> &results)
 {
@@ -767,7 +764,7 @@ void MainScreen::build_boxes(const std::list<dl::detect::result_t> &results)
         lv_obj_set_pos(rect, fx + x0, fy + y0);
         lv_obj_set_size(rect, x1 - x0, y1 - y0);
         lv_obj_set_style_border_color(rect, col, 0);
-        lv_obj_set_style_border_width(rect, BOX_BORDER_WIDTH, 0);
+        lv_obj_set_style_border_width(rect, ui::kMetrics.box_border_w, 0);
         lv_obj_set_style_border_opa(rect, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(rect, col, 0);
         lv_obj_set_style_bg_opa(rect, LV_OPA_20, 0);
@@ -805,19 +802,22 @@ void MainScreen::dispatch_cb()
         /* Created once, on first use. Own stack, own priority — deliberately not
          * the timer-service task, whose death is what made a stuck capture fatal
          * before. */
-        if (xTaskCreate(cb_task, "capture_wq", CB_TASK_STACK, nullptr,
-                        CB_TASK_PRIO, &s_cb_worker_) != pdPASS) {
+        if (xTaskCreate(cb_task, "capture_wq",
+                        policy::kPolicy.capture_task_stack, nullptr,
+                        policy::kPolicy.capture_task_prio,
+                        &s_cb_worker_) != pdPASS) {
             s_cb_worker_ = nullptr;
             /* Refuse the capture instead of running it here: this is the LVGL
              * task, so a capture that blocks would freeze the screen. Better to
              * say the camera is unavailable. */
             ESP_LOGE(TAG, "cannot create the capture worker (%lu bytes) — "
-                          "skipping the capture", (unsigned long)CB_TASK_STACK);
+                          "skipping the capture",
+                          (unsigned long)policy::kPolicy.capture_task_stack);
             write_status_now(ui::text::kStateCameraStuck);
             return;
         }
         ESP_LOGI(TAG, "Capture worker started (stack %lu bytes)",
-                 (unsigned long)CB_TASK_STACK);
+                 (unsigned long)policy::kPolicy.capture_task_stack);
     }
 
     if (cb_busy_) {
@@ -835,7 +835,7 @@ void MainScreen::dispatch_cb()
     /* Re-purpose the display timer as a stuck detector: if the worker is still
      * busy when this fires, the capture is not coming back and the user is told
      * rather than left watching a frozen countdown. */
-    arm(CB_TIMEOUT_MS);
+    arm(policy::kPolicy.capture_timeout_ms);
 }
 
 void MainScreen::cb_task(void *)
@@ -895,7 +895,8 @@ void MainScreen::on_timer(lv_timer_t *t)
          * leave the callback installed so the next trigger tries again. */
         lv_timer_pause(t);
         ESP_LOGE(TAG, "capture callback has not returned after %lu ms — camera "
-                      "stuck, no image this time", (unsigned long)CB_TIMEOUT_MS);
+                      "stuck, no image this time",
+                      (unsigned long)policy::kPolicy.capture_timeout_ms);
         self->write_status_now(ui::text::kStateCameraStuck);
     } else if (self->countdown_ > 1) {
         /* Still counting — next number, keep ticking. This runs in the LVGL
