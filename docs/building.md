@@ -313,6 +313,33 @@ moved since the stamped commit. The expensive half of the gate — re-resolving 
 regenerates the diagrams, and is not repeated in CI: it would cost a Node toolchain and a browser
 download to relearn something already proven.
 
+### The reported version
+
+The image reports the version it was built as: `app_init: App version:` in the boot log, and
+`esp_app_get_description()->version`, which the splash screen prints. It comes from `version.txt` at
+the project root, not from `git describe`.
+
+`${IDF_PATH}/tools/cmake/project.cmake` tries five sources in order — the
+`CONFIG_APP_PROJECT_VER_FROM_CONFIG` override, a `PROJECT_VER` variable, `version.txt`,
+`project(... VERSION)`, `git describe` — and falls back to `"1"` when all of them fail
+(documented at `docs/en/api-guides/build-system.rst:435-442`). `version.txt` is used because both
+contexts this project builds in have no usable git metadata: a CI checkout is depth 1, so no tag
+object is reachable, and the DevContainer runs as root over a mount owned by the host user, so git
+refuses `/project` (`detected dubious ownership`) and `git describe` cannot run at all.
+
+| Build | Version string |
+|---|---|
+| tag | `version.txt` as-is — `preflight` fails the release unless the file equals the tag |
+| `workflow_dispatch` | `dispatch-g<short sha>` — the file would make it claim the last release, so the build passes `-DPROJECT_VER=…`, which wins over the file |
+| local | whatever `version.txt` says, i.e. the last release |
+
+The field is 31 characters: `esp_app_format/CMakeLists.txt` cuts the string
+(`string(SUBSTRING … 0 31)` into `char version[32]`) silently, so an over-long version is truncated
+rather than rejected.
+
+Bump `version.txt` in the release's **code** commit. It cannot go in the stamping commit: the check
+above rejects a release whose tree changed outside `docs/architecture/` after the stamp.
+
 Two things are pinned so a release rebuilds what was tested: the toolchain image by digest
 (`espressif/idf@sha256:6ad927cf…`, ESP-IDF v6.1-dev-8440), and the direct components through the
 manifests — `main/idf_component.yml` plus the selected devkit's. Transitive components are whatever

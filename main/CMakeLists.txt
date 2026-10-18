@@ -33,7 +33,12 @@ if(NOT DEFINED ENV{DEVKIT} OR "$ENV{DEVKIT}" STREQUAL "")
 endif()
 set(DEVKIT_COMPONENT "$ENV{DEVKIT}")
 
+# esp_app_format is a PRIVATE requirement: only splash.cpp includes
+# esp_app_desc.h, and no header main exports does.  It has to be named because
+# it is not one of the build's common requirements
+# (tools/cmake/build.cmake:340-341 lists those).
 idf_component_register(SRCS "app_main.cpp" "app.cpp" "splash.cpp" "main_screen.cpp" "ui_layout.cpp" "voice_pipeline.cpp" "detector.cpp" "mem_sampler.cpp"
                     INCLUDE_DIRS "."
-                    REQUIRES devkit_api ${DEVKIT_COMPONENT})
+                    REQUIRES devkit_api ${DEVKIT_COMPONENT}
+                    PRIV_REQUIRES esp_app_format)
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

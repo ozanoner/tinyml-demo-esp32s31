@@ -6,6 +6,10 @@
  * The screen itself is NOT owned — it belongs to the LVGL port/display.
  * Dismissal removes labels and timer, leaving the screen intact.
  *
+ * The version line is read from the running image's own application
+ * descriptor (esp_app_get_description()), so it reports what was built
+ * rather than a second string the splash would have to be told.
+ *
  * Thread safety: all LVGL calls must be made while holding the BSP
  * LVGL mutex (bsp_display_lock / bsp_display_unlock).
  */
@@ -50,6 +54,7 @@ public:
 private:
     lv_obj_t     *scr_;       /**< screen (not owned) */
     lv_obj_t     *label_;     /**< title label   (owned) */
+    lv_obj_t     *version_;   /**< version label (owned) */
     lv_obj_t     *hint_;      /**< hint label    (owned) */
     lv_timer_t   *timer_;     /**< auto-dismiss  (owned) */
     on_dismiss_t  cb_;
