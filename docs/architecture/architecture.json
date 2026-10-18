@@ -202,12 +202,12 @@
       "sources": [
         {
           "path": "main/main_screen.hpp",
-          "line": 60
+          "line": 63
         },
         {
-          "path": "main/main_screen.cpp",
-          "line": 808,
-          "end_line": 820
+          "path": "main/countdown.cpp",
+          "line": 199,
+          "end_line": 214
         }
       ]
     },
@@ -281,9 +281,9 @@
           "line": 47
         },
         {
-          "path": "main/main_screen.cpp",
-          "line": 112,
-          "end_line": 137
+          "path": "main/screen_widgets.cpp",
+          "line": 64,
+          "end_line": 95
         }
       ]
     },
