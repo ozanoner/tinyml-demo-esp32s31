@@ -70,16 +70,16 @@ Detector::Detector()
     esp_log_level_set("dl::Model", ESP_LOG_DEBUG);
 #endif
 
-    mem::log_now("detector: before COCODetect");
+    MemSampler::instance().log_now("detector: before COCODetect");
     detect_ = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, false);
-    mem::log_now("detector: after COCODetect");
+    MemSampler::instance().log_now("detector: after COCODetect");
     if (detect_ == nullptr) {
         ESP_LOGE(TAG, "COCODetect allocation failed");
         return;
     }
 
     dl::Model *raw = detect_->get_raw_model(0);
-    mem::log_now("detector: after get_raw_model");
+    MemSampler::instance().log_now("detector: after get_raw_model");
     if (raw == nullptr) {
         ESP_LOGE(TAG, "COCODetect model not compiled in — check sdkconfig");
         delete detect_;

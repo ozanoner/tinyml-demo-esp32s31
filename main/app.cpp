@@ -117,7 +117,7 @@ void App::print_memory_summary(const char *label) const
              (unsigned long)free_psram,
              (unsigned long)largest,
              (unsigned long)largest_sram,
-             (unsigned long)mem::fetch_and_reset());
+             (unsigned long)MemSampler::instance().fetch_and_reset());
 #else
     ESP_LOGI(TAG, "[MEM %s] SRAM:%lu  PSRAM:%lu  largest:%lu  largestSRAM:%lu",
              label,
@@ -155,7 +155,7 @@ void App::start()
 {
     /* First, so the sampler covers the whole of bring-up (no-op in release
      * builds). */
-    mem::start();
+    MemSampler::instance().start();
 
     if (!create_devkit_interfaces()) {
         return;

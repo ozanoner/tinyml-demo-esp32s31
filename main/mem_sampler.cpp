@@ -5,83 +5,85 @@
 
 #include "sdkconfig.h"
 
-#if CONFIG_MEM_LOW_WATER
-
 #include "mem_sampler.hpp"
+
+#if CONFIG_MEM_LOW_WATER
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 namespace {
 
 constexpr const char *TAG = "memsampler";
 
-/** Sampling period. 5 ms was the period used to find the #67 dip: fast enough
- *  that a 167 KB internal arena cannot be allocated and released between two
+/** Sampling period. 5 ms was the period that found the #67 dip: fast enough
+ *  that a ~109 KB internal block cannot be taken and released between two
  *  samples, slow enough to cost nothing. */
 constexpr uint32_t kPeriodMs = 5;
 
-TaskHandle_t s_task      = nullptr;
-volatile size_t s_low    = SIZE_MAX;   /**< minimum free internal since reset */
-portMUX_TYPE s_low_mux   = portMUX_INITIALIZER_UNLOCKED;
+/* Static, in .bss (internal DRAM), taken once at start(): the sampler must not
+ * itself contribute to the pressure it is measuring, and a TCB must be internal
+ * (xPortCheckValidTCBMem). */
+StaticTask_t s_tcb;
+StackType_t  s_stack[2048 / sizeof(StackType_t)];
 
-void sample()
+}  // namespace
+
+MemSampler &MemSampler::instance()
 {
-    const size_t free_now = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    portENTER_CRITICAL(&s_low_mux);
-    if (free_now < s_low) {
-        s_low = free_now;
-    }
-    portEXIT_CRITICAL(&s_low_mux);
+    static MemSampler sampler;
+    return sampler;
 }
 
-void sampler_task(void *)
+void MemSampler::sample()
 {
+    const size_t free_now = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+
+    std::lock_guard<std::mutex> lock(mux_);
+    if (free_now < low_) {
+        low_ = free_now;
+    }
+}
+
+void MemSampler::task_entry(void *arg)
+{
+    auto *self = static_cast<MemSampler *>(arg);
     for (;;) {
-        sample();
+        self->sample();
         vTaskDelay(pdMS_TO_TICKS(kPeriodMs));
     }
 }
 
-}  // namespace
-
-namespace mem {
-
-void start()
+void MemSampler::start()
 {
-    if (s_task != nullptr) {
+    /* Called once from App::start(), so no lock: creating a task while holding
+     * mux_ would only make the new task wait on its first sample for nothing. */
+    if (task_ != nullptr) {
         return;
     }
-    /* Low priority: this must never delay bring-up, and it only reads a
-     * counter. Its stack is static in .bss (internal), taken once here rather
-     * than from the internal heap, so the sampler cannot itself contribute to
-     * the pressure it is measuring. */
-    static StackType_t  stack[2048 / sizeof(StackType_t)];
-    static StaticTask_t tcb;
-    s_task = xTaskCreateStatic(sampler_task, "memsample",
-                               sizeof(stack) / sizeof(StackType_t), nullptr,
-                               tskIDLE_PRIORITY + 1, stack, &tcb);
-    if (s_task == nullptr) {
+
+    task_ = xTaskCreateStatic(task_entry, "memsample",
+                              sizeof(s_stack) / sizeof(StackType_t), this,
+                              tskIDLE_PRIORITY + 1, s_stack, &s_tcb);
+    if (task_ == nullptr) {
         ESP_LOGE(TAG, "sampler task not created — no low-water figures");
         return;
     }
+
     sample();
-    ESP_LOGI(TAG, "low-water sampler started (%lu ms period)", (unsigned long)kPeriodMs);
+    ESP_LOGI(TAG, "low-water sampler started (%lu ms period)",
+             (unsigned long)kPeriodMs);
 }
 
-size_t fetch_and_reset()
+size_t MemSampler::fetch_and_reset()
 {
-    portENTER_CRITICAL(&s_low_mux);
-    const size_t low = s_low;
-    s_low = SIZE_MAX;
-    portEXIT_CRITICAL(&s_low_mux);
+    std::lock_guard<std::mutex> lock(mux_);
+    const size_t low = low_;
+    low_ = SIZE_MAX;
     return (low == SIZE_MAX) ? 0 : low;
 }
 
-void log_now(const char *what)
+void MemSampler::log_now(const char *what)
 {
     sample();
     ESP_LOGI(TAG, "%s: free=%lu low=%lu", what,
@@ -89,16 +91,18 @@ void log_now(const char *what)
              (unsigned long)fetch_and_reset());
 }
 
-}  // namespace mem
+#else   /* !CONFIG_MEM_LOW_WATER — same API, no task, no cost. */
 
-#else   /* !CONFIG_MEM_LOW_WATER — call sites stay unconditional, cost nothing. */
+MemSampler &MemSampler::instance()
+{
+    static MemSampler sampler;
+    return sampler;
+}
 
-#include "mem_sampler.hpp"
-
-namespace mem {
-void   start()                       {}
-size_t fetch_and_reset()             { return 0; }
-void   log_now(const char * /*what*/){}
-}  // namespace mem
+void MemSampler::start()                                 {}
+size_t MemSampler::fetch_and_reset()                     { return 0; }
+void MemSampler::log_now(const char * /*what*/)          {}
+void MemSampler::sample()                                {}
+void MemSampler::task_entry(void * /*arg*/)              {}
 
 #endif  /* CONFIG_MEM_LOW_WATER */
