@@ -337,6 +337,16 @@ The field is 31 characters: `esp_app_format/CMakeLists.txt` cuts the string
 (`string(SUBSTRING … 0 31)` into `char version[32]`) silently, so an over-long version is truncated
 rather than rejected.
 
+A published image can be checked without a board — `tools/app_desc.py` reads the same
+`esp_app_desc_t` the boot log prints and the splash displays, out of the `.bin` itself:
+
+```bash
+python3 tools/app_desc.py dist/*.bin --expect v0.2.0
+```
+
+It takes the app image (descriptor at `0x20`) and `merged-<devkit>.bin` alike, where the bootloader
+comes first and the descriptor sits at `0x10020`.
+
 Bump `version.txt` in the release's **code** commit. It cannot go in the stamping commit: the check
 above rejects a release whose tree changed outside `docs/architecture/` after the stamp.
 
