@@ -58,14 +58,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The component graph is pinned by the committed dependencies.lock, so the
-      # cache key changes only when that graph changes.
+      # The component solve is driven by the manifests: main's, plus this
+      # devkit's (the other devkit's manifest is excluded from the solve). The
+      # lock file is build output and is not in the checkout. (issue #77)
       - name: Restore the component cache
         uses: actions/cache@v4
         with:
           path: managed_components
-          key: components-${{ runner.os }}-${{ hashFiles('dependencies.lock') }}
-          restore-keys: components-${{ runner.os }}-
+          key: components-${{ runner.os }}-${{ matrix.devkit }}-${{ hashFiles('main/idf_component.yml', format('devkits/{0}/idf_component.yml', matrix.devkit)) }}
+          restore-keys: components-${{ runner.os }}-${{ matrix.devkit }}-
 
       - name: Pull the pinned toolchain
         run: docker pull "$IDF_IMAGE"
