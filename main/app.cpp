@@ -164,9 +164,28 @@ void App::start()
     /* ---- Splash screen ----
      * The main screen is built from this splash's dismissal, which fires on the
      * LVGL task (both paths: the timer and the tap). That is where MainScreen
-     * must be constructed, and why the dismissal carries `this`. */
-    if (!display_->lock(0)) {
-        ESP_LOGE(TAG, "Could not take LVGL mutex for splash");
+     * must be constructed, and why the dismissal carries `this`.
+     *
+     * The screen's existence must NOT depend on the splash. The LVGL worker
+     * holds the display lock across a TE-synchronised flush of a full frame
+     * (~23 ms on the Mosaico), so taking it with a zero timeout failed often
+     * enough to leave a whole boot with no UI at all: a working voice pipeline
+     * behind a dark panel, with one E line as the only trace (issue #66). Wait
+     * for the lock the way any other task does, and if the splash cannot be put
+     * up, build the main screen anyway. */
+    const int32_t lock_ms =
+        static_cast<int32_t>(policy::kPolicy.lvgl_lock_timeout_ms);
+
+    if (!display_->lock(lock_ms)) {
+        /* One retry, not a loop: a ~23 ms flush cannot outlast a second, so a
+         * second failure is a real fault and is reported as one. */
+        if (display_->lock(lock_ms)) {
+            build_main_screen();
+            display_->unlock();
+        } else {
+            ESP_LOGE(TAG, "no LVGL lock after 2 x %ld ms — the UI is not built "
+                          "and the app will run headless", (long)lock_ms);
+        }
     } else {
         Splash splash(ui::text::kSplashTitle,
                       ui::text::kSplashHint,

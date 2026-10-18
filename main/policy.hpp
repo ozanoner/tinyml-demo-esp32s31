@@ -149,6 +149,16 @@ struct Policy {
     uint32_t splash_ms = 5000;
 
     /**
+     * How long bring-up waits for the LVGL lock before giving up on the splash.
+     *
+     * The LVGL worker holds this lock across a TE-synchronised flush of a full
+     * frame — ~23 ms on the Mosaico — which is contention worth waiting out
+     * rather than losing the screen over (issue #66). One second is three orders
+     * of magnitude of headroom over that flush and still bounds the wait.
+     */
+    uint32_t lvgl_lock_timeout_ms = 1000;
+
+    /**
      * Warn in the memory summary once this share of the allocatable pool is in
      * use (SRS 3.2 says 80 %).
      *
