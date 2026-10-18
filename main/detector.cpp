@@ -14,6 +14,10 @@
  */
 
 #include "detector.hpp"
+
+#include "sdkconfig.h"
+
+#include "mem_sampler.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -56,13 +60,26 @@ Detector::Detector()
     , frame_buf_(nullptr)
     , frame_buf_size_(0)
 {
+    /* Unmute esp-dl's own memory accounting when the sampler is on: the greedy
+     * manager computes the internal arena size and dl::Model reports its own
+     * internal/PSRAM deltas, which is exactly what #67 needs to attribute the
+     * peak. */
+#if CONFIG_MEM_LOW_WATER
+    esp_log_level_set("MemoryManagerGreedy", ESP_LOG_DEBUG);
+    esp_log_level_set("dl::ModelContext", ESP_LOG_DEBUG);
+    esp_log_level_set("dl::Model", ESP_LOG_DEBUG);
+#endif
+
+    MemSampler::instance().log_now("detector: before COCODetect");
     detect_ = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, false);
+    MemSampler::instance().log_now("detector: after COCODetect");
     if (detect_ == nullptr) {
         ESP_LOGE(TAG, "COCODetect allocation failed");
         return;
     }
 
     dl::Model *raw = detect_->get_raw_model(0);
+    MemSampler::instance().log_now("detector: after get_raw_model");
     if (raw == nullptr) {
         ESP_LOGE(TAG, "COCODetect model not compiled in — check sdkconfig");
         delete detect_;

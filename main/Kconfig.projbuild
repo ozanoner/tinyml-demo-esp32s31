@@ -43,4 +43,21 @@ menu "Diagnostics"
             Off in release builds. Turn it on for audio-path diagnosis:
             idf.py --preset <name> menuconfig  (Diagnostics -> Audio-path metering)
 
+    # The internal-RAM low-water sampler (issue #67). Between-stages snapshots
+    # cannot see an intra-stage peak: the detector's internal cost is ~59 KB net
+    # but ~167 KB at its worst, and the dip happens during construction. This
+    # samples the internal heap every 5 ms and reports the minimum per stage, and
+    # unmutes esp-dl's own memory-manager logging.
+    config MEM_LOW_WATER
+        bool "Internal-RAM low-water sampler (#67 diagnostics)"
+        default n
+        help
+            A 5 ms task keeps the minimum free internal RAM seen since the last
+            [MEM ...] stage line, which then reports it as lowSRAM.
+
+            Measurement only - it allocates nothing and changes no subsystem -
+            but the task wakes every 5 ms for the whole boot, so it is off in
+            release builds. Turn it on for memory work:
+            idf.py --preset <name> menuconfig  (Diagnostics -> Internal-RAM low-water sampler)
+
 endmenu
