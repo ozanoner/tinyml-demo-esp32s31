@@ -39,7 +39,8 @@ set(DEVKIT_COMPONENT "$ENV{DEVKIT}")
 # (tools/cmake/build.cmake:340-341 lists those).
 idf_component_register(SRCS "app_main.cpp" "app.cpp" "splash.cpp" "main_screen.cpp"
                             "screen_widgets.cpp" "screen_text.cpp" "countdown.cpp" "result_view.cpp"
-                            "ui_layout.cpp" "voice_pipeline.cpp" "detector.cpp" "mem_sampler.cpp"
+                            "ui_layout.cpp" "voice_pipeline.cpp" "command_state.cpp"
+                            "detector.cpp" "mem_sampler.cpp"
                     INCLUDE_DIRS "."
                     REQUIRES devkit_api ${DEVKIT_COMPONENT}
                     PRIV_REQUIRES esp_app_format)

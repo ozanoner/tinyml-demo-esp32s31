@@ -1,18 +1,25 @@
 /**
  * @file voice_pipeline.hpp
- * @brief Voice-triggered pipeline — AFE initialisation, WakeNet detection,
- *        MultiNet command detection.
+ * @brief Voice-triggered pipeline — the audio plumbing: AFE initialisation,
+ *        WakeNet detection, MultiNet command detection, and the two tasks that
+ *        drive them.
+ *
+ * The pipeline is split in two (issue #87):
+ *   - this class — the plumbing: models, AFE, MultiNet, the feed and detect
+ *     tasks, and the microphone they read;
+ *   - CommandState (main/command_state.hpp) — the WAKE → CMD state machine: the
+ *     command-mode flag, its 15-second window, and the transitions it reports
+ *     through on_wakeword_, on_command_ and on_timeout_.
  *
  * RAII class that owns:
  *   - The AFE handle (esp_afe_sr_data_t)
  *   - The MultiNet handle (model_iface_data_t)
  *   - Two FreeRTOS tasks (feed + detect)
- *   - A 15-second timeout timer for command-mode fallback
+ *   - A CommandState, which owns the 15-second window timer
  *
  * Thread safety: the feed task runs on core 0, the detect task on core 1.
- * State transitions are communicated via the on_wakeword_, on_command_ and
- * on_timeout_ callbacks, which must be lightweight (ideally just an LVGL
- * set_state call or a FreeRTOS notification).
+ * State transitions are communicated via the callbacks above, which must be
+ * lightweight (ideally just an LVGL set_state call or a FreeRTOS notification).
  *
  * Models are loaded from the flash partition labelled "model".
  */
@@ -25,6 +32,7 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 
+#include "command_state.hpp"
 #include "policy.hpp"
 
 #ifdef __cplusplus
@@ -60,7 +68,7 @@ public:
      * @param audio        devkit audio interface; must outlive this object
      * @param on_wakeword  called from detect task when wake word spotted
      * @param on_command   called from detect task when a command is detected
-     * @param on_timeout   called from timer when 15 s expires without command
+     * @param on_timeout   called when command mode ends without a command
      */
     VoicePipeline(devkit::Audio *audio,
                   callback_t on_wakeword,
@@ -78,10 +86,10 @@ public:
     bool is_running() const { return task_flag_ != 0; }
 
     /** Start the 15-second command-mode timeout. */
-    void start_command_timeout();
+    void start_command_timeout() { command_.start_timeout(); }
 
     /** Cancel the command-mode timeout and return to wake-word listening. */
-    void cancel_command_timeout();
+    void cancel_command_timeout() { command_.cancel_timeout(); }
 
     /**
      * @brief Exit command mode immediately.
@@ -90,15 +98,12 @@ public:
      * wake-word detection on its next iteration.  Can be called from
      * any context (interrupt-safe via volatile flag).
      */
-    void exit_command_mode() { command_mode_ = false; }
+    void exit_command_mode() { command_.exit(); }
 
     /**
      * @brief Enter command mode (re-entering after result display dismiss).
      */
-    void enter_command_mode() {
-        command_mode_ = true;
-        start_command_timeout();
-    }
+    void enter_command_mode() { command_.enter(); }
 
 private:
     /* ---- AFE data ------------------------------------------------------ */
@@ -156,22 +161,10 @@ private:
     StackType_t *feed_stack_;
     StackType_t *detect_stack_;
 
-    /* ---- Command mode state ------------------------------------------- */
-    volatile bool command_mode_;    /**< true = detecting commands */
-
-    /* ---- Timer --------------------------------------------------------- */
-    TimerHandle_t timeout_timer_;
-
-    /* ---- Callbacks ----------------------------------------------------- */
-    callback_t on_wakeword_;
-    callback_t on_command_;
-    callback_t on_timeout_;
+    /* ---- The WAKE → CMD state machine (owns the window timer) --------- */
+    CommandState command_;
 
     /* ---- Internal FreeRTOS task functions (static) -------------------- */
     static void feed_task_fn(void *arg);
     static void detect_task_fn(void *arg);
-    static void timeout_timer_fn(TimerHandle_t timer);
-
-    /** Command mode entry, on the AFE's wake-word report. */
-    void enter_command_mode_on_wake();
 };
