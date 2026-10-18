@@ -28,8 +28,8 @@ public:
      * @brief Construct and show the splash on the default display's active screen.
      * Caller MUST hold the LVGL mutex.
      *
-     * @param title      multi-line title text (Montserrat 28)
-     * @param hint       footer hint   (Montserrat 14)
+     * @param title      multi-line title text (the theme's status font)
+     * @param hint       footer hint (the theme's list font)
      * @param timeout_ms auto-dismiss period; the caller supplies it — the app's
      *                   value is policy::kPolicy.splash_ms, and a default here
      *                   would be a second place to change it (issue #61)

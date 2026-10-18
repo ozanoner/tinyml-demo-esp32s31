@@ -56,6 +56,10 @@ inline constexpr uint32_t kText = 0xffffff;
 /** Directive line. */
 inline constexpr uint32_t kMuted = 0x9aa3b2;
 
+/** Splash footer — the hint and the version line. Deliberately darker than
+ *  kMuted: the splash has no status line, so these two are its quietest text. */
+inline constexpr uint32_t kSplashFooter = 0x888888;
+
 /** The picture box before a frame exists. */
 inline constexpr uint32_t kPlaceholder = 0xffffff;
 
